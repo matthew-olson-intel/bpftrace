@@ -11,7 +11,7 @@ bool is_quoted_type(const SizedType &ty)
 {
   return ty.IsKstackTy() || ty.IsUstackTy() || ty.IsKsymTy() || ty.IsUsymTy() ||
          ty.IsInetTy() || ty.IsUsernameTy() || ty.IsStringTy() ||
-         ty.IsBufferTy() || ty.IsProbeTy();
+         ty.IsBufferTy() || ty.IsProbeTy() || ty.IsCgroupPathTy();
 }
 } // namespace
 
@@ -275,9 +275,9 @@ std::string Output::value_to_str(BPFtrace &bpftrace,
     return bpftrace.resolve_probe(read_data<uint64_t>(value.data()));
   else if (type.IsTimestampTy())
     return bpftrace.resolve_timestamp(
+        reinterpret_cast<AsyncEvent::Strftime *>(value.data())->mode,
         reinterpret_cast<AsyncEvent::Strftime *>(value.data())->strftime_id,
-        reinterpret_cast<AsyncEvent::Strftime *>(value.data())
-            ->nsecs_since_boot);
+        reinterpret_cast<AsyncEvent::Strftime *>(value.data())->nsecs);
   else if (type.IsMacAddressTy())
     return bpftrace.resolve_mac_address(value.data());
   else if (type.IsCgroupPathTy())
@@ -712,8 +712,8 @@ std::string JsonOutput::hist_to_str(const std::vector<uint64_t> &values,
     }
     else
     {
-      long low = 1 << (i-2);
-      long high = (1 << (i-2+1)) - 1;
+      long low = 1ULL << (i - 2);
+      long high = (1ULL << (i - 2 + 1)) - 1;
       res << "\"min\": " << low << ", \"max\": " << high << ", ";
     }
     res << "\"count\": " << values.at(i) / div;

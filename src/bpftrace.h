@@ -13,6 +13,7 @@
 #include "ast/ast.h"
 #include "attached_probe.h"
 #include "bpffeature.h"
+#include "bpfprogram.h"
 #include "btf.h"
 #include "child.h"
 #include "dwarf_parser.h"
@@ -89,15 +90,13 @@ private:
   std::string msg_;
 };
 
-using BpfBytecode = std::unordered_map<std::string, std::vector<uint8_t>>;
-
 class BPFtrace
 {
 public:
-  BPFtrace(std::unique_ptr<Output> o = std::make_unique<TextOutput>(std::cout))
-      : traceable_funcs_(get_traceable_funcs()),
-        out_(std::move(o)),
-        feature_(std::make_unique<BPFfeature>()),
+  BPFtrace(std::unique_ptr<Output> o = std::make_unique<TextOutput>(std::cout),
+           BPFnofeature no_feature = BPFnofeature())
+      : out_(std::move(o)),
+        feature_(std::make_unique<BPFfeature>(no_feature)),
         probe_matcher_(std::make_unique<ProbeMatcher>(this)),
         ncpus_(get_possible_cpus().size())
   {
@@ -133,7 +132,9 @@ public:
                            bool show_module = false);
   std::string resolve_inet(int af, const uint8_t* inet) const;
   std::string resolve_uid(uintptr_t addr) const;
-  std::string resolve_timestamp(uint32_t strftime_id, uint64_t nsecs);
+  std::string resolve_timestamp(uint32_t mode,
+                                uint32_t strftime_id,
+                                uint64_t nsecs);
   uint64_t resolve_kname(const std::string &name) const;
   virtual int resolve_uname(const std::string &name,
                             struct symbol *sym,
@@ -154,7 +155,7 @@ public:
   std::optional<int64_t> get_int_literal(const ast::Expression *expr) const;
   std::optional<std::string> get_watchpoint_binary_path() const;
   virtual bool is_traceable_func(const std::string &func_name) const;
-  std::unordered_set<std::string> get_func_modules(
+  virtual std::unordered_set<std::string> get_func_modules(
       const std::string &func_name) const;
   int create_pcaps(void);
   void close_pcaps(void);
@@ -178,8 +179,7 @@ public:
   std::map<std::string, std::string> macros_;
   std::map<std::string, uint64_t> enums_;
   std::map<libbpf::bpf_func_id, location> helper_use_loc_;
-  // mapping traceable functions to modules (or "vmlinux") that they appear in
-  FuncsModulesMap traceable_funcs_;
+  const FuncsModulesMap &get_traceable_funcs() const;
   KConfig kconfig;
   std::vector<std::unique_ptr<AttachedProbe>> attached_probes_;
 
@@ -201,6 +201,7 @@ public:
   uint64_t max_type_res_iterations = 0;
   bool demangle_cpp_symbols_ = true;
   bool resolve_user_symbols_ = true;
+  bool debug_output_ = false;
   enum class UserSymbolCacheType
   {
     per_pid,
@@ -214,6 +215,7 @@ public:
   uint64_t ast_max_nodes_ = 0; // Maximum AST nodes allowed for fuzzing
   std::optional<StackMode> stack_mode_;
   std::optional<struct timespec> boottime_;
+  std::optional<struct timespec> delta_taitime_;
   static constexpr uint32_t rb_loss_cnt_key_ = 0;
   static constexpr uint64_t rb_loss_cnt_val_ = 0;
 
@@ -251,7 +253,7 @@ private:
 
   std::vector<std::unique_ptr<AttachedProbe>> attach_usdt_probe(
       Probe &probe,
-      std::tuple<uint8_t *, uintptr_t> func,
+      BpfProgram &&program,
       int pid,
       bool file_activation);
   int setup_output();
@@ -281,6 +283,11 @@ private:
   int epollfd_ = -1;
   struct ring_buffer *ringbuf_ = nullptr;
   uint64_t ringbuf_loss_count_ = 0;
+
+  // Mapping traceable functions to modules (or "vmlinux") they appear in.
+  // Needs to be mutable to allow lazy loading of the mapping from const lookup
+  // functions.
+  mutable FuncsModulesMap traceable_funcs_;
 
   std::unordered_map<std::string, std::unique_ptr<Dwarf>> dwarves_;
 };

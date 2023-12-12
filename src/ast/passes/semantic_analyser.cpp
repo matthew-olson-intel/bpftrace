@@ -133,7 +133,33 @@ void SemanticAnalyser::visit(Identifier &identifier)
     identifier.type = CreateInt(
         std::get<0>(getIntcasts().at(identifier.ident)));
   }
-  else {
+  else if (func_ == "nsecs")
+  {
+    identifier.type = CreateTimestampMode();
+    if (identifier.ident == "monotonic")
+    {
+      identifier.type.ts_mode = TimestampMode::monotonic;
+    }
+    else if (identifier.ident == "boot")
+    {
+      identifier.type.ts_mode = TimestampMode::boot;
+    }
+    else if (identifier.ident == "tai")
+    {
+      identifier.type.ts_mode = TimestampMode::tai;
+    }
+    else if (identifier.ident == "sw_tai")
+    {
+      identifier.type.ts_mode = TimestampMode::sw_tai;
+    }
+    else
+    {
+      LOG(ERROR, identifier.loc, err_)
+          << "Invalid timestamp mode: " << identifier.ident;
+    }
+  }
+  else
+  {
     identifier.type = CreateNone();
     LOG(ERROR, identifier.loc, err_)
         << "Unknown identifier: '" + identifier.ident + "'";
@@ -279,7 +305,8 @@ void SemanticAnalyser::visit(Builtin &builtin)
            builtin.ident == "pid" || builtin.ident == "tid" ||
            builtin.ident == "cgroup" || builtin.ident == "uid" ||
            builtin.ident == "gid" || builtin.ident == "cpu" ||
-           builtin.ident == "rand" || builtin.ident == "numaid")
+           builtin.ident == "rand" || builtin.ident == "numaid" ||
+           builtin.ident == "jiffies")
   {
     builtin.type = CreateUInt64();
     if (builtin.ident == "cgroup" &&
@@ -288,6 +315,12 @@ void SemanticAnalyser::visit(Builtin &builtin)
       LOG(ERROR, builtin.loc, err_)
           << "BPF_FUNC_get_current_cgroup_id is not available for your kernel "
              "version";
+    }
+    else if (builtin.ident == "jiffies" &&
+             !bpftrace_.feature_->has_helper_jiffies64())
+    {
+      LOG(ERROR, builtin.loc, err_)
+          << "BPF_FUNC_jiffies64 is not available for your kernel version";
     }
   }
   else if (builtin.ident == "curtask")
@@ -352,6 +385,15 @@ void SemanticAnalyser::visit(Builtin &builtin)
         builtin.type = CreateKSym();
       else if (type == ProbeType::uprobe || type == ProbeType::uretprobe)
         builtin.type = CreateUSym();
+      else if (type == ProbeType::kfunc || type == ProbeType::kretfunc)
+      {
+        if (!bpftrace_.feature_->has_helper_get_func_ip())
+        {
+          LOG(ERROR, builtin.loc, err_)
+              << "BPF_FUNC_get_func_ip not available for your kernel version";
+        }
+        builtin.type = CreateKSym();
+      }
       else
         LOG(ERROR, builtin.loc, err_)
             << "The func builtin can not be used with '"
@@ -436,10 +478,16 @@ void SemanticAnalyser::visit(Builtin &builtin)
       auto type_name = probe_->args_typename();
       builtin.type = CreateRecord(type_name,
                                   bpftrace_.structs.Lookup(type_name));
+      if (builtin.type.GetFieldCount() == 0)
+        LOG(ERROR, builtin.loc, err_) << "Cannot read function parameters";
+
       builtin.type.MarkCtxAccess();
       builtin.type.is_funcarg = true;
       builtin.type.SetAS(type == ProbeType::uprobe ? AddrSpace::user
                                                    : AddrSpace::kernel);
+      // We'll build uprobe args struct on stack
+      if (type == ProbeType::uprobe)
+        builtin.type.is_internal = true;
     }
     else if (type != ProbeType::tracepoint) // no special action for tracepoint
     {
@@ -1088,6 +1136,27 @@ void SemanticAnalyser::visit(Call &call)
       }
     }
   }
+  else if (call.func == "len")
+  {
+    if (check_nargs(call, 1))
+    {
+      auto &arg = *call.vargs->at(0);
+      if (!arg.is_map)
+        LOG(ERROR, call.loc, err_) << "len() expects a map to be provided";
+      else
+      {
+        Map &map = static_cast<Map &>(arg);
+        map.skip_key_validation = true;
+        if (map.vargs != nullptr)
+        {
+          LOG(ERROR, call.loc, err_)
+              << "The map passed to " << call.func << "() should not be "
+              << "indexed by a key";
+        }
+        call.type = CreateInt64();
+      }
+    }
+  }
   else if (call.func == "time") {
     check_assignment(call, false, false, false);
     if (check_varargs(call, 0, 1)) {
@@ -1100,9 +1169,18 @@ void SemanticAnalyser::visit(Call &call)
   else if (call.func == "strftime")
   {
     call.type = CreateTimestamp();
-    check_varargs(call, 2, 2) && is_final_pass() &&
+    if (check_varargs(call, 2, 2) && is_final_pass() &&
         check_arg(call, Type::string, 0, true) &&
-        check_arg(call, Type::integer, 1, false);
+        check_arg(call, Type::integer, 1, false))
+    {
+      auto &arg = *call.vargs->at(1);
+      call.type.ts_mode = arg.type.ts_mode;
+      if (call.type.ts_mode == TimestampMode::monotonic)
+      {
+        LOG(ERROR, call.loc, err_)
+            << "strftime() can not take a monotonic timestamp";
+      }
+    }
   }
   else if (call.func == "kstack") {
     check_stack_call(call, true);
@@ -1334,6 +1412,26 @@ void SemanticAnalyser::visit(Call &call)
     }
     call.type = CreateUInt32();
   }
+  else if (call.func == "nsecs")
+  {
+    if (check_varargs(call, 0, 1))
+    {
+      call.type = CreateUInt64();
+      call.type.ts_mode = TimestampMode::boot;
+      if (call.vargs && call.vargs->size() == 1 &&
+          check_arg(call, Type::timestamp_mode, 0))
+      {
+        call.type.ts_mode = call.vargs->at(0)->type.ts_mode;
+      }
+
+      if (call.type.ts_mode == TimestampMode::tai &&
+          !bpftrace_.feature_->has_helper_ktime_get_tai_ns())
+      {
+        LOG(ERROR, call.loc, err_)
+            << "Kernel does not support tai timestamp, please try sw_tai";
+      }
+    }
+  }
   else
   {
     LOG(ERROR, call.loc, err_) << "Unknown function: '" << call.func << "'";
@@ -1480,7 +1578,7 @@ void SemanticAnalyser::visit(Map &map)
         map.vargs->at(i) = cast;
         expr = cast;
       }
-      else if (expr->type.IsCtxAccess())
+      else if (expr->type.IsPtrTy() && expr->type.IsCtxAccess())
       {
         // map functions only accepts a pointer to a element in the stack
         LOG(ERROR, map.loc, err_) << "context cannot be used as a map key";
@@ -1963,6 +2061,7 @@ void SemanticAnalyser::visit(Unop &unop)
       if (type.IsCtxAccess())
         unop.type.MarkCtxAccess();
       unop.type.is_btftype = type.is_btftype;
+      unop.type.is_internal = type.is_internal;
       unop.type.SetAS(type.GetAS());
     }
     else if (type.IsRecordTy())
@@ -2284,12 +2383,51 @@ void SemanticAnalyser::visit(Cast &cast)
 
   if (!cast.type.IsIntTy() && !cast.type.IsPtrTy() &&
       !(cast.type.IsPtrTy() && !cast.type.GetElementTy()->IsIntTy() &&
-        !cast.type.GetElementTy()->IsRecordTy()))
+        !cast.type.GetElementTy()->IsRecordTy()) &&
+      // we support casting integers to int arrays
+      !(cast.type.IsArrayTy() && cast.type.GetElementTy()->IsIntTy()))
   {
     LOG(ERROR, cast.loc, err_) << "Cannot cast to \"" << cast.type << "\"";
   }
-  if (cast.type.IsIntTy() && !rhs.IsIntTy() && !rhs.IsPtrTy() &&
-      !rhs.IsCtxAccess())
+
+  if (cast.type.IsArrayTy())
+  {
+    if (cast.type.GetElementTy()->IsBoolTy())
+    {
+      LOG(ERROR, cast.loc, err_) << "Bit arrays are not supported";
+      return;
+    }
+
+    if (cast.type.GetNumElements() == 0)
+    {
+      if (cast.type.GetElementTy()->GetSize() == 0)
+        LOG(ERROR, cast.loc, err_) << "Could not determine size of the array";
+      else
+      {
+        if (rhs.GetSize() % cast.type.GetElementTy()->GetSize() != 0)
+        {
+          LOG(ERROR, cast.loc, err_)
+              << "Cannot determine array size: the element size is "
+                 "incompatible with the cast integer size";
+        }
+
+        // cast to unsized array (e.g. int8[]), determine size from RHS
+        auto num_elems = rhs.GetSize() / cast.type.GetElementTy()->GetSize();
+        cast.type = CreateArray(num_elems, *cast.type.GetElementTy());
+      }
+    }
+
+    if (rhs.IsIntTy())
+      cast.type.is_internal = true;
+  }
+
+  if ((cast.type.IsIntTy() && !rhs.IsIntTy() && !rhs.IsPtrTy() &&
+       !rhs.IsCtxAccess() && !(rhs.IsArrayTy())) ||
+      // casting from/to int arrays must respect the size
+      (cast.type.IsArrayTy() &&
+       (!rhs.IsIntTy() || cast.type.GetSize() != rhs.GetSize())) ||
+      (rhs.IsArrayTy() &&
+       (!cast.type.IsIntTy() || cast.type.GetSize() != rhs.GetSize())))
   {
     LOG(ERROR, cast.loc, err_)
         << "Cannot cast from \"" << rhs << "\" to \"" << cast.type << "\"";
@@ -2442,12 +2580,6 @@ void SemanticAnalyser::visit(AssignVarStatement &assignment)
 
   auto &assignTy = assignment.expr->type;
 
-  auto *builtin = dynamic_cast<Builtin *>(assignment.expr);
-  if (builtin && builtin->ident == "args" && builtin->type.is_funcarg)
-  {
-    LOG(ERROR, assignment.loc, err_) << "args cannot be assigned to a variable";
-  }
-
   if (search != variable_val_[probe_].end())
   {
     if (search->second.IsNoneTy())
@@ -2577,12 +2709,25 @@ void SemanticAnalyser::visit(AttachPoint &ap)
     if (ap.func == "" && ap.address == 0)
       LOG(ERROR, ap.loc, err_)
           << ap.provider << " should be attached to a function and/or address";
+    if (ap.lang != "" && !is_supported_lang(ap.lang))
+      LOG(ERROR, ap.loc, err_) << "unsupported language type: " << ap.lang;
 
     if (ap.provider == "uretprobe" && ap.func_offset != 0)
       LOG(ERROR, ap.loc, err_)
           << "uretprobes can not be attached to a function offset";
 
-    auto paths = resolve_binary_path(ap.target, bpftrace_.pid());
+    std::vector<std::string> paths;
+    if (ap.target == "*")
+    {
+      if (bpftrace_.pid() > 0)
+        paths = get_mapped_paths_for_pid(bpftrace_.pid());
+      else
+        paths = get_mapped_paths_for_running_pids();
+    }
+    else
+    {
+      paths = resolve_binary_path(ap.target, bpftrace_.pid());
+    }
     switch (paths.size())
     {
     case 0:
@@ -2642,6 +2787,10 @@ void SemanticAnalyser::visit(AttachPoint &ap)
     {
       USDTHelper::probes_for_pid(bpftrace_.pid());
     }
+    else if (ap.target == "*")
+    {
+      USDTHelper::probes_for_all_pids();
+    }
     else if (ap.target != "")
     {
       for (auto &path : resolve_binary_path(ap.target))
@@ -2650,7 +2799,8 @@ void SemanticAnalyser::visit(AttachPoint &ap)
     else
     {
       LOG(ERROR, ap.loc, err_)
-          << "usdt probe must specify at least path or pid to probe";
+          << "usdt probe must specify at least path or pid to probe. To target "
+             "all paths/pids set the path to '*'.";
     }
   }
   else if (ap.provider == "tracepoint") {
@@ -2668,29 +2818,34 @@ void SemanticAnalyser::visit(AttachPoint &ap)
   else if (ap.provider == "profile") {
     if (ap.target == "")
       LOG(ERROR, ap.loc, err_) << "profile probe must have unit of time";
-    else if (ap.target != "hz" &&
-             ap.target != "us" &&
-             ap.target != "ms" &&
-             ap.target != "s")
-      LOG(ERROR, ap.loc, err_)
-          << ap.target << " is not an accepted unit of time";
-    if (ap.func != "")
-      LOG(ERROR, ap.loc, err_)
-          << "profile probe must have an integer frequency";
-    else if (ap.freq <= 0)
-      LOG(ERROR, ap.loc, err_)
-          << "profile frequency should be a positive integer";
+    else if (!listing_)
+    {
+      if (TIME_UNITS.find(ap.target) == TIME_UNITS.end())
+        LOG(ERROR, ap.loc, err_)
+            << ap.target << " is not an accepted unit of time";
+      if (ap.func != "")
+        LOG(ERROR, ap.loc, err_)
+            << "profile probe must have an integer frequency";
+      else if (ap.freq <= 0)
+        LOG(ERROR, ap.loc, err_)
+            << "profile frequency should be a positive integer";
+    }
   }
   else if (ap.provider == "interval") {
     if (ap.target == "")
       LOG(ERROR, ap.loc, err_) << "interval probe must have unit of time";
-    else if (ap.target != "ms" && ap.target != "s" && ap.target != "us" &&
-             ap.target != "hz")
-      LOG(ERROR, ap.loc, err_)
-          << ap.target << " is not an accepted unit of time";
-    if (ap.func != "")
-      LOG(ERROR, ap.loc, err_)
-          << "interval probe must have an integer frequency";
+    else if (!listing_)
+    {
+      if (TIME_UNITS.find(ap.target) == TIME_UNITS.end())
+        LOG(ERROR, ap.loc, err_)
+            << ap.target << " is not an accepted unit of time";
+      if (ap.func != "")
+        LOG(ERROR, ap.loc, err_)
+            << "interval probe must have an integer frequency";
+      else if (ap.freq <= 0)
+        LOG(ERROR, ap.loc, err_)
+            << "interval frequency should be a positive integer";
+    }
   }
   else if (ap.provider == "software") {
     if (ap.target == "")
@@ -2824,6 +2979,18 @@ void SemanticAnalyser::visit(AttachPoint &ap)
 
     if (ap.func == "")
       LOG(ERROR, ap.loc, err_) << "kfunc should specify a function";
+  }
+  else if (ap.provider == "fentry" || ap.provider == "fexit")
+  {
+    if (!bpftrace_.feature_->has_kfunc())
+    {
+      LOG(ERROR, ap.loc, err_)
+          << "fentry/fexit not available for your kernel version.";
+      return;
+    }
+
+    if (ap.func == "")
+      LOG(ERROR, ap.loc, err_) << "fentry/fexit should specify a function";
   }
   else if (ap.provider == "iter")
   {
@@ -3205,8 +3372,11 @@ void SemanticAnalyser::assign_map_type(const Map &map, const SizedType &type)
 {
   const std::string &map_ident = map.ident;
 
-  if (type.IsRecordTy() && (type.is_funcarg || type.is_tparg))
-    LOG(ERROR, map.loc, err_) << "Storing args in maps is not supported";
+  if (type.IsRecordTy() && type.is_tparg)
+  {
+    LOG(ERROR, map.loc, err_)
+        << "Storing tracepoint args in maps is not supported";
+  }
 
   auto *maptype = get_map_type(map);
   if (maptype)

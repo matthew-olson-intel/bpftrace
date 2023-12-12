@@ -24,6 +24,7 @@ TestStruct = namedtuple(
         'run',
         'prog',
         'expect',
+        'expect_mode', # regex, text, json ...
         'timeout',
         'befores',
         'after',
@@ -36,7 +37,8 @@ TestStruct = namedtuple(
         'arch',
         'feature_requirement',
         'neg_feature_requirement',
-        'will_fail'
+        'will_fail',
+        'new_pidns'
     ],
 )
 
@@ -101,6 +103,7 @@ class TestParser(object):
         run = ''
         prog = ''
         expect = ''
+        expect_mode = ''
         timeout = ''
         befores = []
         after = ''
@@ -113,6 +116,7 @@ class TestParser(object):
         feature_requirement = set()
         neg_feature_requirement = set()
         will_fail = False
+        new_pidns = False
 
         for item in test:
             item_split = item.split()
@@ -127,6 +131,13 @@ class TestParser(object):
                 prog = line
             elif item_name == 'EXPECT':
                 expect = line
+                expect_mode = 'regex'
+            elif item_name == 'EXPECT_FILE':
+                expect = line
+                expect_mode = 'file'
+            elif item_name == 'EXPECT_JSON':
+                expect = line
+                expect_mode = 'json'
             elif item_name == 'TIMEOUT':
                 timeout = int(line.strip(' '))
             elif item_name == 'BEFORE':
@@ -163,7 +174,11 @@ class TestParser(object):
                     "dwarf",
                     "aot",
                     "kprobe_multi",
+                    "uprobe_multi",
                     "skboutput",
+                    "get_tai_ns",
+                    "get_func_ip",
+                    "jiffies64",
                 }
 
                 for f in line.split(" "):
@@ -178,6 +193,8 @@ class TestParser(object):
                     raise UnknownFieldError('%s is invalid for REQUIRES_FEATURE. Suite: %s' % (','.join(unknown), test_suite))
             elif item_name == "WILL_FAIL":
                 will_fail = True
+            elif item_name == "NEW_PIDNS":
+                new_pidns = True
             else:
                 raise UnknownFieldError('Field %s is unknown. Suite: %s' % (item_name, test_suite))
 
@@ -197,6 +214,7 @@ class TestParser(object):
             run,
             prog,
             expect,
+            expect_mode,
             timeout,
             befores,
             after,
@@ -209,4 +227,5 @@ class TestParser(object):
             arch,
             feature_requirement,
             neg_feature_requirement,
-            will_fail)
+            will_fail,
+            new_pidns)

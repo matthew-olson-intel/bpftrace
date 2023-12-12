@@ -9,15 +9,72 @@ and this project adheres to
 ## Unreleased
 
 #### Added
+- Add a `jiffies` builtin for advanced usages
+  - [#2769](https://github.com/iovisor/bpftrace/pull/2769)
+- Emit better errors messages for invalid attachpoints
+  - [#2781](https://github.com/iovisor/bpftrace/pull/2781)
+- Add support for uprobe_multi link
+  - [#2810](https://github.com/iovisor/bpftrace/pull/2810)
+- Attach BTF to generated BPF programs
+  - [#2804](https://github.com/iovisor/bpftrace/pull/2804)
+- Add fentry/fexit aliases for kfunc/kretfunc
+  - [#2844](https://github.com/iovisor/bpftrace/pull/2844)
+- Add support for uprobe pid targeting
+  - [#2830](https://github.com/iovisor/bpftrace/pull/2830)
+- New builtin for getting the number of map elements
+  - [#2840](https://github.com/iovisor/bpftrace/pull/2840)
+#### Changed
+#### Deprecated
+#### Removed
+- Remove snapcraft support
+  - [#2832](https://github.com/iovisor/bpftrace/pull/2832)
+#### Fixed
+- Fix JSON output for cgroup_path
+  - [#2793](https://github.com/iovisor/bpftrace/pull/2793)
+- Fix silent truncation of 64-bit values in hist()
+  - [#2822](https://github.com/iovisor/bpftrace/pull/2822)
+- utils: use /data/local/tmp as temprary dir on Android
+  - [#2828](https://github.com/iovisor/bpftrace/pull/2828)
+- Fix uprobe multi probe for targets with wildcards
+  - [#2851](https://github.com/iovisor/bpftrace/pull/2851)
+- Fix symbolication on for 32-bit userspcae and 64-bit kernel
+  - [#2869](https://github.com/iovisor/bpftrace/pull/2869)
+#### Docs
+#### Tools
+- Update runqlen.bt to remove `runnable_weight` field from cfs_rq struct.
+  - [#2790](https://github.com/iovisor/bpftrace/pull/2790)
+- Update mdflush.bt to use blkdev.h instead of genhd.h for non-BTF builds.
+  - [#2849](https://github.com/iovisor/bpftrace/pull/2849)
+
+## [0.19.0] 2023-09-19
+
+#### Added
 - Rawtracepoint support wildcards and list show
   - [#2588](https://github.com/iovisor/bpftrace/pull/2588)
 - Support all iterators
   - [#2630](https://github.com/iovisor/bpftrace/pull/2630)
+- Improve working with all probe params (kfunc, uprobe)
+  - [#2477](https://github.com/iovisor/bpftrace/pull/2477)
+- Support func builtin for k(ret)func probes
+  - [#2692](https://github.com/iovisor/bpftrace/pull/2692)
+- Support casting int <-> int array
+  - [#2686](https://github.com/iovisor/bpftrace/pull/2686)
+- Support targeting all running processes for USDTs
+  - [#2734](https://github.com/iovisor/bpftrace/pull/2734)
+- Support targeting all running processes for uprobes/uretprobes
+  - [#2757](https://github.com/iovisor/bpftrace/pull/2757)
 #### Changed
 - Make `args` a structure (instead of a pointer)
   - [#2578](https://github.com/iovisor/bpftrace/pull/2578)
 - Improve user symbol resolution
   - [#2386](https://github.com/iovisor/bpftrace/pull/2386)
+- uprobes: make C++ symbol demangling explicit
+  - [#2657](https://github.com/iovisor/bpftrace/pull/2657)
+- uprobe: improve C++ probes listing
+  - [#2693](https://github.com/iovisor/bpftrace/pull/2693)
+#### Removed
+- Delete embedded build support and surrounding infra
+  - [#2742](https://github.com/iovisor/bpftrace/pull/2742)
 #### Fixed
 - Fix resolving username for malformed /etc/passwd
   - [#2631](https://github.com/iovisor/bpftrace/pull/2631)
@@ -25,6 +82,22 @@ and this project adheres to
   - [#2623](https://github.com/iovisor/bpftrace/pull/2623)
 - Fix alignment of byte arrays inside tuples
   - [#2625](https://github.com/iovisor/bpftrace/pull/2625)
+- cmake: fix linking libbfd
+  - [#2673](https://github.com/iovisor/bpftrace/pull/2673)
+- Allow '+' in attach point path
+  - [#2696](https://github.com/iovisor/bpftrace/pull/2696)
+- Improve listing and 'probe' builtin for several probe types
+  - [#2691](https://github.com/iovisor/bpftrace/pull/2691)
+- Allow probe builtin with aliased software/hardware probes
+  - [#2711](https://github.com/iovisor/bpftrace/pull/2711)
+- Support executing symlinked binaries with `-c`
+  - [#2708](https://github.com/iovisor/bpftrace/pull/2708)
+- Add access to `CLOCK_MONOTONIC` with `nsecs(monotonic)`
+  - [#2718](https://github.com/iovisor/bpftrace/pull/2718)
+- iter: Skip structures with '__safe_trusted' suffix
+  - [#2732](https://github.com/iovisor/bpftrace/pull/2732)
+- Improve detection of unknown typedefs in ClangParser
+  - [#2763](https://github.com/iovisor/bpftrace/pull/2763)
 
 
 ## [0.18.0] 2023-05-15

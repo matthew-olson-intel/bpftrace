@@ -118,7 +118,8 @@ u:lib.so:"fn(char const*)" { printf("arg0:%s\n", str(arg0));}
 
 *-p* _PID_::
   Attach to the process with _PID_. If the process terminates, bpftrace will also terminate.
-  When using USDT probes they will be attached to only this process.
+  When using USDT probes, uprobes, and uretprobes they will be attached to only this process.
+  For listing uprobes/uretprobes if you set the target to '*' the process's address space will be searched for the symbols.
 
 *-c* _COMMAND_::
   Run _COMMAND_ as a child process.
@@ -136,6 +137,12 @@ u:lib.so:"fn(char const*)" { printf("arg0:%s\n", str(arg0));}
 
 *--info*::
   Print detailed information about features supported by the kernel and the bpftrace build.
+
+*--no-feature* _feature,feature,..._::
+  Disable detected features, valid values are::
+
+  *uprobe_multi* to disable uprobe_multi link +
+  *kprobe_multi* to disable kprobe_multi link
 
 *-h, --help*::
   Print the help summary
@@ -171,79 +178,52 @@ Custom prefix to easily link section
 ////
 :idprefix: envvar_
 
+=== BPFTRACE_BTF
 
+Default: None
 
-=== BPFTRACE_STRLEN
-
-Default: 64
-
-Number of bytes allocated on the BPF stack for the string returned by `str()`.
-
-Make this larger if you wish to read bigger strings with str().
-
-Beware that the BPF stack is small (512 bytes).
-
-Support for even larger strings is [being discussed](https://github.com/iovisor/bpftrace/issues/305).
-
-=== BPFTRACE_NO_CPP_DEMANGLE
-
-Default: 0
-
-C++ symbol demangling in user space stack traces is enabled by default.
-
-This feature can be turned off by setting the value of this environment variable to `1`.
-
-=== BPFTRACE_MAP_KEYS_MAX
-
-Default: 4096
-
-This is the maximum number of keys that can be stored in a map.
-Increasing the value will consume more memory and increase startup times.
-There are some cases where you will want to: for example, sampling stack traces, recording timestamps for each page, etc.
-
-=== BPFTRACE_MAX_PROBES
-
-Default: 512
-
-This is the maximum number of probes that bpftrace can attach to.
-Increasing the value will consume more memory, increase startup times and can incur high performance overhead or even freeze or crash the system.
+The path to a BTF file. By default, bpftrace searches several locations to find a BTF file.
+See src/btf.cpp for the details.
 
 === BPFTRACE_CACHE_USER_SYMBOLS
 
 Default: PER_PROGRAM if ASLR disabled or `-c` option given, PER_PID otherwise.
 
-Caching strategy for user symbols. Valid values are:
+-* PER_PROGRAM - each program has its own cache. If there are more processes with enabled ASLR for a single program, this might produce incorrect results.
+-* PER_PID - each process has its own cache. This is accurate for processes with ASLR enabled, and enables bpftrace to preload caches for processes running at probe attachment ti
+me. If there are many processes running, it will consume a lot of a memory.
+-* NONE - caching disabled. This saves the most memory, but at the cost of speed.
 
-* PER_PROGRAM - each program has its own cache. If there are more processes with enabled ASLR for a single program, this might produce incorrect results.
-* PER_PID - each process has its own cache. This is accurate for processes with ASLR enabled, and enables bpftrace to preload caches for processes running at probe attachement time. If there are many processes running, it will consume a lot of a memory.
-* NONE - caching disabled. This saves the most memory, but at the cost of speed.
+=== BPFTRACE_CAT_BYTES_MAX
 
-=== BPFTRACE_VMLINUX
+Default: 10k
 
-Default: None
+Maximum bytes read by cat builtin.
 
-This specifies the vmlinux path used for kernel symbol resolution when attaching kprobe to offset.
-If this value is not given, bpftrace searches vmlinux from pre defined locations.
-See src/attached_probe.cpp:find_vmlinux() for details.
+=== BPFTRACE_DEBUG_OUTPUT
 
-=== BPFTRACE_BTF
+Default: 0
 
-Default: None
+Outputs bpftrace's runtime debug messages to the trace_pipe. This feature can be turned on by setting
+the value of this environment variable to `1`.
 
-The path to a BTF file.
-By default, bpftrace searches several locations to find a BTF file.
-See src/btf.cpp for the details.
+=== BPFTRACE_KERNEL_BUILD
 
-=== BPFTRACE_PERF_RB_PAGES
+Default: `/lib/modules/$(uname -r)`
 
-Default: 64
+Only used with `BPFTRACE_KERNEL_SOURCE` if it is out-of-tree Linux kernel build.
 
-Number of pages to allocate per CPU for perf ring buffer.
-The value must be a power of 2.
+=== BPFTRACE_KERNEL_SOURCE
 
-If you're getting a lot of dropped events bpftrace may not be processing events in the ring buffer fast enough.
-It may be useful to bump the value higher so more events can be queued up.
-The tradeoff is that bpftrace will use more memory.
+Default: `/lib/modules/$(uname -r)`
+
+bpftrace requires kernel headers for certain features, which are searched for in this directory.
+
+=== BPFTRACE_LOG_SIZE
+
+Default: 1000000
+
+Log size in bytes.
 
 === BPFTRACE_MAX_BPF_PROGS
 
@@ -253,11 +233,45 @@ This is the maximum number of BPF programs (functions) that bpftrace can generat
 The main purpose of this limit is to prevent bpftrace from hanging since generating a lot of probes
 takes a lot of resources (and it should not happen often).
 
-=== BPFTRACE_STR_TRUNC_TRAILER
+=== BPFTRACE_MAP_KEYS_MAX
 
-Default: `..`
+Default: 4096
 
-Trailer to add to strings that were truncated. Set to empty string to disable truncation trailers.
+This is the maximum number of keys that can be stored in a map. Increasing the value will consume more
+memory and increase startup times. There are some cases where you will want to: for example, sampling
+stack traces, recording timestamps for each page, etc.
+
+=== BPFTRACE_MAX_PROBES
+
+Default: 512
+
+This is the maximum number of probes that bpftrace can attach to. Increasing the value will consume more
+memory, increase startup times and can incur high performance overhead or even freeze or crash the
+system.
+
+=== BPFTRACE_MAX_TYPE_RES_ITERATIONS
+
+Default: 0
+
+Maximum should be the number of levels of nested field accesses for tracepoint args. 0 is unlimited.
+
+=== BPFTRACE_NO_CPP_DEMANGLE
+
+Default: 0
+
+C++ symbol demangling in userspace stack traces is enabled by default.
+
+This feature can be turned off by setting the value of this environment variable to `1`.
+
+=== BPFTRACE_PERF_RB_PAGES
+
+Default: 64
+
+Number of pages to allocate per CPU for perf ring buffer. The value must be a power of 2.
+
+If you're getting a lot of dropped events bpftrace may not be processing events in the ring buffer
+fast enough. It may be useful to bump the value higher so more events can be queued up. The tradeoff
+is that bpftrace will use more memory.
 
 === BPFTRACE_STACK_MODE
 
@@ -265,6 +279,33 @@ Default: bpftrace
 
 Output format for ustack and kstack builtins. Available modes/formats: `bpftrace`, `perf`, and `raw`.
 This can be overwritten at the call site.
+
+=== BPFTRACE_STRLEN
+
+Default: 64
+
+Number of bytes allocated on the BPF stack for the string returned by str().
+
+Make this larger if you wish to read bigger strings with str().
+
+Beware that the BPF stack is small (512 bytes), and that you pay the toll again inside printf() (whilst
+it composes a perf event output buffer). So in practice you can only grow this to about 200 bytes.
+
+Support for even larger strings is [being discussed](https://github.com/iovisor/bpftrace/issues/305).
+
+=== BPFTRACE_STR_TRUNC_TRAILER
+
+Default: `..`
+
+Trailer to add to strings that were truncated. Set to empty string to disable truncation trailers.
+
+=== BPFTRACE_VMLINUX
+
+Default: None
+
+This specifies the vmlinux path used for kernel symbol resolution when attaching kprobe to offset.
+If this value is not given, bpftrace searches vmlinux from pre defined locations.
+See src/attached_probe.cpp:find_vmlinux() for details.
 
 ////
 !
@@ -458,6 +499,18 @@ $py = (int16 *) $pz;
 
 Integer casts to a higher rank are sign extended.
 Conversion to a lower rank is done by zeroing leading bits.
+
+It is also possible to cast between integers and integer arrays using the same
+syntax:
+
+----
+$a = (uint8[8]) 12345;
+$x = (uint64) $a;
+----
+
+Both the cast and the destination type must have the same size. When casting to
+an array, it is possible to omit the size which will be determined automatically
+from the size of the cast value.
 
 === Operators and Expressions
 
@@ -848,13 +901,40 @@ This prefix reset must be at the end of the section, else cross references break
 
 :idprefix: _
 
-== Sync and Async
+== Invocation Mode
+
+There are three invocation modes for bpftrace built-in functions.
+
+[cols="~,~,~"]
+|===
+
+| Mode
+| Description
+| Example functions
+
+| Synchronous
+| The value/effect of the built-in function is determined/handled right away by the bpf program in the kernel space.
+| `reg(), str(), ntop()`
+
+| Asynchronous
+| The value/effect of the built-in function is determined/handled later by the bpftrace process in the user space.
+| `printf(), clear(), exit()`
+
+| Compile-time
+| The value of the built-in function is determined before bpf programs are running.
+| `kaddr(), cgroupid(), offsetof()`
+
+|===
 
 While BPF in the kernel can do a lot there are still things that can only be done from user space, like the outputting (printing) of data.
 The way bpftrace handles this is by sending events from the BPF program which user-space will pick up some time in the future (usually in milliseconds).
 Operations that happen in the kernel are 'synchronous' ('sync') and those that are handled in user space are 'asynchronous' ('async')
 
-The async behaviour can lead to some unexpected behavior as updates can happen before user space had time to process the event.
+The asynchronous behaviour can lead to some unexpected behavior as updates can happen before user space had time to process the event. The following situations may occur:
+
+* event loss: when using printf(), the amount of data printed may be less than the actual number of events generated by the kernel during BPF program's execution.
+* delayed exit: when using the exit() to terminate the program, bpftrace needs to handle the exit signal asynchronously causing the BPF program may continue to run for some additional time.
+
 One example is updating a map value in a tight loop:
 
 ----
@@ -882,6 +962,8 @@ Maps are printed by reference not by value and as the value gets updated right a
 @: 10
 @: 10
 ----
+
+Therefore, when you need precise event statistics, it is recommended to use synchronous functions (e.g. count() and hist()) to ensure more reliable and accurate results.
 
 == Address-spaces
 
@@ -931,6 +1013,12 @@ For string arguments use the `str()` call to retrieve the value.
 | n/a
 | n/a
 | nth argument passed to the function being traced. These are extracted from the CPU registers. The amount of args passed in registers depends on the CPU architecture. (kprobes, uprobes, usdt).
+
+| `args`
+| struct args
+| n/a
+| n/a
+| The struct of all arguments of the traced function. Available in `tracepoint`, `kfunc`, and `uprobe` (with DWARF) probes. Use `args.x` to access argument `x` or `args` to get a record with all arguments.
 
 | cgroup
 | uint64
@@ -997,6 +1085,12 @@ For string arguments use the `str()` call to retrieve the value.
 | 4.1 / 5.7
 | ktime_get_ns / ktime_get_boot_ns
 | nanoseconds since kernel boot. On kernels that support `ktime_get_boot_ns` this includes the time spent suspended, on older kernels it does not.
+
+| jiffies
+| uint64
+| 5.9
+| get_jiffies_64
+| Jiffies of the kernel. In 32-bit system, using this builtin might be slower.
 
 | pid
 | uint64
@@ -1255,6 +1349,13 @@ Calculate the sum of all `n` passed.
 *async*
 
 Set all values for all keys to zero.
+
+=== len
+
+.variants
+* `len(map m)`
+
+Return the number of elements in the map.
 
 == Functions
 
@@ -1597,7 +1698,7 @@ Note that subfields are not yet supported.
 *Helper* `probe_read_str, probe_read_{kernel,user}_str`
 
 `str` reads a NULL terminated (`\0`) string from `data`.
-The maximum string length is limited by the `BPFTRACE_STR_LEN` env variable, unless `length` is specified and shorter than the maximum.
+The maximum string length is limited by the `BPFTRACE_STRLEN` env variable, unless `length` is specified and shorter than the maximum.
 In case the string is longer than the specified length only `length - 1` bytes are copied and a NULL byte is appended at the end.
 
 When available (starting from kernel 5.5, see the `--info` flag) bpftrace will automatically use the `kernel` or `user` variant of `probe_read_{kernel,user}_str` based on the address space of `data`, see <<Address-spaces>> for more information.
@@ -2231,7 +2332,9 @@ NetworkManager:1155 /var/lib/sss/mc/passwd (deleted)
 
 .variants
 * `kfunc[:mod]:fn`
+* `fentry[:mod]:fn`
 * `kretfunc[:mod]:fn`
+* `fexit[:mod]:fn`
 
 .shortnames
 * `f` (`kfunc`)
@@ -2243,6 +2346,7 @@ NetworkManager:1155 /var/lib/sss/mc/passwd (deleted)
 
 ``kfunc``s attach to kernel function similar to <<probes-kprobe>>.
 They make use of eBPF trampolines which allows kernel code to call into BPF programs with near zero overhead.
+`kfunc` and `kretfunc` are aliased as `fentry` and `fexit` to match how these are referenced in the kernel.
 
 `kfunc` s make use of BTF type information to derive the type of function arguments at compile time.
 This removes the need for manual type casting and makes the code more resilient against small signature changes in the kernel.
@@ -2477,6 +2581,15 @@ Allocated 4 bytes
 
 If the traced binary has DWARF included, function arguments are available in the `args` struct which can be inspected with verbose listing, see the <<Listing Probes>> section for more details.
 
+When tracing C{plus}{plus} programs, it is possible to turn on automatic symbol demangling
+by using the `:cpp` prefix:
+
+----
+# bpftrace -e 'u:src/bpftrace:cpp:"bpftrace::BPFtrace::add_probe" { print("adding probe\n"); }'
+Attaching 1 probe...
+adding probe
+----
+
 It is important to note that for `uretprobe` s to work the kernel runs a special helper on user-space function entry which overrides the return address on the stack.
 This can cause issues with languages that have their own runtime like Golang:
 
@@ -2507,10 +2620,15 @@ fatal error: unknown caller pc
 === usdt
 
 .variants
-* `usdt:binary:name`
+* `usdt:binary_path:probe_name`
+* `usdt:binary_path:[probe_namespace]:probe_name`
+* `usdt:library_path:probe_name`
+* `usdt:library_path:[probe_namespace]:probe_name`
 
 .shortnames
 * `U`
+
+You can target the entire host (or an entire process's address space by using the `-p` arg) by using a single wildcard in place of the binary_path/library_path e.g. bpftrace -e 'usdt:*:loop { printf("hi\n"); }. Please note that if you use wildcards for the probe_name or probe_namespace and end up targeting multiple USDTs for the same probe you might get errors if you also utilize the USDT argument builtins (e.g. arg0) as they could be of different types.
 
 [#probes-watchpoint]
 === watchpoint and asyncwatchpoint

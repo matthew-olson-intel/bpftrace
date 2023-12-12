@@ -19,13 +19,23 @@ EXPECT Elapsed time: 1s
 TIMEOUT 5
 
 NAME printf_argument_alignment
-RUN {{BPFTRACE}} -e 'struct Foo { int a; char b[10]; } uprobe:testprogs/uprobe_test:function2 { $foo = (struct Foo *)arg0; $foo2 = (struct Foo *)arg1; printf("%d %s %d %s\n", $foo->a, $foo->b, $foo2->a, $foo2->b) }' -c ./testprogs/uprobe_test
+RUN {{BPFTRACE}} -e 'struct Foo { int a; char b[10]; } uprobe:testprogs/uprobe_test:uprobeFunction2 { $foo = (struct Foo *)arg0; $foo2 = (struct Foo *)arg1; printf("%d %s %d %s\n", $foo->a, $foo->b, $foo2->a, $foo2->b) }' -c ./testprogs/uprobe_test
 EXPECT 123 hello 456 world
 TIMEOUT 5
 
 NAME printf_more_arguments
 PROG BEGIN { printf("%dst: %sa; %dnd: %sb;; %drd: %sc;;; %dth: %sd;;;;\\n", 1, "a", 2, "ab", 3, "abc", 4, "abcd"); exit(); }
 EXPECT 1st: aa; 2nd: abb;; 3rd: abcc;;; 4th: abcdd;;;;
+TIMEOUT 5
+
+NAME printf_length_modifiers
+PROG BEGIN { $x = 0x12345678abcdef; printf("%hhx %hx %x %jx\n", $x, $x, $x, $x); exit(); }
+EXPECT ef cdef 78abcdef 12345678abcdef
+TIMEOUT 5
+
+NAME printf_char
+PROG BEGIN { printf("%c%c%c%c\n", 0x41, 0x42, 0x43, 0x44); exit(); }
+EXPECT ABCD
 TIMEOUT 5
 
 NAME time
@@ -58,14 +68,14 @@ NAME str_truncated
 PROG t:syscalls:sys_enter_execve { printf("P: %s\n", str(args.filename)); exit();}
 ENV BPFTRACE_STRLEN=5
 AFTER ./testprogs/syscall execve /bin/ls &>/dev/null
-EXPECT P: /bin\.\.
+EXPECT P: /...\.\.
 TIMEOUT 5
 
 NAME str_truncated_custom
 PROG t:syscalls:sys_enter_execve { printf("P: %s\n", str(args.filename)); exit();}
 ENV BPFTRACE_STRLEN=5 BPFTRACE_STR_TRUNC_TRAILER=_xxx
 AFTER ./testprogs/syscall execve /bin/ls &>/dev/null
-EXPECT P: /bin_xxx
+EXPECT P: /..._xxx
 TIMEOUT 5
 
 NAME buf
@@ -189,6 +199,16 @@ EXPECT @bytes: *\n[\[(].*
 AFTER ./testprogs/syscall read
 TIMEOUT 5
 
+NAME hist_2_values
+PROG BEGIN { @=hist(3);@=hist(20);exit();}
+EXPECT_FILE runtime/outputs/hist_2_values.txt
+TIMEOUT 1
+
+NAME hist_10g
+PROG BEGIN { @ = hist(10 * 1024 * 1024 * 1024); exit(); }
+EXPECT_JSON runtime/outputs/hist_10g.json
+TIMEOUT 1
+
 NAME lhist
 PROG kretprobe:vfs_read { @bytes = lhist(retval, 0, 10000, 1000); exit()}
 EXPECT @bytes: *\n[\[(].*
@@ -246,6 +266,15 @@ ENV BPFTRACE_CACHE_USER_SYMBOLS=PER_PROGRAM
 PROG uprobe:./testprogs/uprobe_symres_exited_process:test { print(ustack); exit(); }
 EXPECT ^\s+test\+0\s+main\+[1-9][0-9]*
 AFTER ./testprogs/disable_aslr ./testprogs/uprobe_symres_exited_process
+ARCH x86_64
+TIMEOUT 5
+
+NAME ustack_elf_symtable
+ENV BPFTRACE_CACHE_USER_SYMBOLS=PER_PROGRAM
+PROG uprobe:./testprogs/uprobe_symres_exited_process:test { print(ustack); exit(); }
+EXPECT ^\s+test\+0\s+test2\+[1-9][0-9]*\s+main\+[1-9][0-9]*
+AFTER ./testprogs/disable_aslr ./testprogs/uprobe_symres_exited_process
+ARCH ppc64le
 TIMEOUT 5
 
 NAME cat
@@ -259,7 +288,7 @@ EXPECT [0-9]*.[0-9]* [0-9]*.[0-9]*
 TIMEOUT 5
 
 NAME uaddr
-RUN {{BPFTRACE}} -e 'uprobe:testprogs/uprobe_test:function1 { printf("0x%lx -- 0x%lx\n", *uaddr("GLOBAL_A"), *uaddr("GLOBAL_C")); exit(); }' -c ./testprogs/uprobe_test
+RUN {{BPFTRACE}} -e 'uprobe:testprogs/uprobe_test:uprobeFunction1 { printf("0x%lx -- 0x%lx\n", *uaddr("GLOBAL_A"), *uaddr("GLOBAL_C")); exit(); }' -c ./testprogs/uprobe_test
 EXPECT 0x55555555 -- 0x33333333
 TIMEOUT 5
 
@@ -490,9 +519,10 @@ EXPECT 1234
 TIMEOUT 1
 
 NAME skboutput
-RUN {{BPFTRACE}} -e 'kfunc:dev_queue_xmit { $ret = skboutput("skb.pcap", args.skb, args.skb->len, 14); if ($ret == 0) { printf("OK\n"); exit(); } }'
-AFTER ./testprogs/syscall 127.0.0.1 80
+RUN {{BPFTRACE}} -e 'kfunc:__dev_queue_xmit { $ret = skboutput("skb.pcap", args.skb, args.skb->len, 14); if ($ret == 0) { printf("OK\n"); exit(); } }'
+AFTER ./testprogs/syscall connect 127.0.0.1 80
 EXPECT OK
+REQUIRES_FEATURE kfunc
 REQUIRES_FEATURE skboutput
 TIMEOUT 5
 MIN_KERNEL 5.5
@@ -510,4 +540,36 @@ TIMEOUT 3
 NAME debugf_with_seq_printf
 RUN echo > /sys/kernel/debug/tracing/trace; {{BPFTRACE}} -e 'i:ms:1 { printf("printf %d", 0); debugf("debugf %d", 1); exit();}'; cat /sys/kernel/debug/tracing/trace
 EXPECT bpf_trace_printk: debugf 1
+TIMEOUT 3
+
+NAME nsecs
+PROG i:ms:1 { printf("SUCCESS %llu\n", nsecs()); exit(); }
+EXPECT SUCCESS [0-9]+
+TIMEOUT 5
+
+NAME nsecs_monotonic
+PROG i:ms:1 { printf("SUCCESS %llu\n", nsecs(monotonic)); exit(); }
+EXPECT SUCCESS [0-9]+
+TIMEOUT 5
+
+NAME nsecs_boot
+PROG i:ms:1 { printf("SUCCESS %llu\n", nsecs(boot)); exit(); }
+EXPECT SUCCESS [0-9]+
+TIMEOUT 5
+
+NAME nsecs_tai
+PROG i:ms:1 { printf("SUCCESS %llu\n", nsecs(tai)); exit(); }
+EXPECT SUCCESS [0-9]+
+TIMEOUT 5
+REQUIRES_FEATURE get_tai_ns
+MIN_KERNEL 6.1
+
+NAME nsecs_sw_tai
+PROG i:ms:1 { printf("SUCCESS %llu\n", nsecs(sw_tai)); exit(); }
+EXPECT SUCCESS [0-9]+
+TIMEOUT 5
+
+NAME map len
+PROG BEGIN { @[0] = 0; @[1] = 1; printf("map len: %d\n", len(@)); exit(); }
+EXPECT map len: 2
 TIMEOUT 3

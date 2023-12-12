@@ -39,8 +39,9 @@ static int add_symbol(const char* symname,
  */
 std::set<std::string> ProbeMatcher::get_matches_in_stream(
     const std::string& search_input,
-    bool ignore_trailing_module,
     std::istream& symbol_stream,
+    bool ignore_trailing_module,
+    bool demangle_symbols,
     const char delim)
 {
   bool start_wildcard, end_wildcard;
@@ -57,16 +58,33 @@ std::set<std::string> ProbeMatcher::get_matches_in_stream(
 
     if (!wildcard_match(line, tokens, start_wildcard, end_wildcard))
     {
-      auto fun_line = line;
-      auto prefix = fun_line.find(':') != std::string::npos
-                        ? erase_prefix(fun_line) + ":"
-                        : "";
-      if (symbol_has_cpp_mangled_signature(fun_line))
+      if (demangle_symbols)
       {
-        char* demangled_name = cxxdemangle(fun_line.c_str());
-        if (demangled_name)
+        auto fun_line = line;
+        auto prefix = fun_line.find(':') != std::string::npos
+                          ? erase_prefix(fun_line) + ":"
+                          : "";
+        if (symbol_has_cpp_mangled_signature(fun_line))
         {
-          if (!wildcard_match(prefix + demangled_name, tokens, true, true))
+          char* demangled_name = cxxdemangle(fun_line.c_str());
+          if (!demangled_name)
+            continue;
+
+          // Match against the demanled name.
+          // Since demangled_name contains function arguments, we need to remove
+          // them unless the user specified '(' in the search input (i.e. wants
+          // to match against the arguments explicitly).
+          std::string match_line = prefix + demangled_name;
+          if (std::all_of(tokens.begin(),
+                          tokens.end(),
+                          [&](const std::string& token) {
+                            return token.find("(") == std::string::npos;
+                          }))
+          {
+            match_line = match_line.substr(0, match_line.find_last_of("("));
+          }
+
+          if (!wildcard_match(match_line, tokens, start_wildcard, end_wildcard))
           {
             free(demangled_name);
           }
@@ -97,7 +115,8 @@ std::set<std::string> ProbeMatcher::get_matches_in_stream(
 std::set<std::string> ProbeMatcher::get_matches_for_probetype(
     const ProbeType& probe_type,
     const std::string& target,
-    const std::string& search_input)
+    const std::string& search_input,
+    bool demangle_symbols)
 {
   std::unique_ptr<std::istream> symbol_stream;
   bool ignore_trailing_module = false;
@@ -116,7 +135,7 @@ std::set<std::string> ProbeMatcher::get_matches_for_probetype(
     case ProbeType::watchpoint:
     case ProbeType::asyncwatchpoint:
     {
-      symbol_stream = get_func_symbols_from_file(target);
+      symbol_stream = get_func_symbols_from_file(bpftrace_->pid(), target);
       break;
     }
     case ProbeType::tracepoint:
@@ -173,10 +192,18 @@ std::set<std::string> ProbeMatcher::get_matches_for_probetype(
         if (bpftrace_->feature_->has_iter(iter))
           ret += iter + "\n";
         else
-          LOG(WARNING) << "The kernel contains bpf_iter__$ITER struct but "
-                          "does not support loading an iterator program "
-                          "against it. Please report this bug.";
+          LOG(WARNING) << "The kernel contains bpf_iter__" << iter
+                       << " struct but does not support loading an iterator"
+                          " program against it. Please report this bug.";
       }
+      symbol_stream = std::make_unique<std::istringstream>(ret);
+      break;
+    }
+    case ProbeType::interval:
+    case ProbeType::profile: {
+      std::string ret;
+      for (auto& unit : TIME_UNITS)
+        ret += unit + ":\n";
       symbol_stream = std::make_unique<std::istringstream>(ret);
       break;
     }
@@ -185,9 +212,8 @@ std::set<std::string> ProbeMatcher::get_matches_for_probetype(
   }
 
   if (symbol_stream)
-    return get_matches_in_stream(search_input,
-                                 ignore_trailing_module,
-                                 *symbol_stream);
+    return get_matches_in_stream(
+        search_input, *symbol_stream, ignore_trailing_module, demangle_symbols);
   else
     return {};
 }
@@ -206,7 +232,7 @@ std::set<std::string> ProbeMatcher::get_matches_in_set(
     stream_in.append(str + "$");
 
   std::istringstream stream(stream_in);
-  return get_matches_in_stream(search_input, false, stream, '$');
+  return get_matches_in_stream(search_input, stream, false, false, '$');
 }
 
 std::unique_ptr<std::istream> ProbeMatcher::get_symbols_from_file(
@@ -226,7 +252,7 @@ std::unique_ptr<std::istream> ProbeMatcher::get_symbols_from_traceable_funcs(
     void) const
 {
   std::string funcs;
-  for (auto& func_mod : bpftrace_->traceable_funcs_)
+  for (auto& func_mod : bpftrace_->get_traceable_funcs())
   {
     if (func_mod.second.empty() || *func_mod.second.begin() == "vmlinux")
     {
@@ -255,14 +281,22 @@ std::unique_ptr<std::istream> ProbeMatcher::get_symbols_from_file_safe(
 }
 
 std::unique_ptr<std::istream> ProbeMatcher::get_func_symbols_from_file(
+    int pid,
     const std::string& path) const
 {
   if (path.empty())
     return std::make_unique<std::istringstream>("");
 
   std::vector<std::string> real_paths;
-  if (path.find('*') != std::string::npos)
-    real_paths = resolve_binary_path(path);
+  if (path == "*")
+  {
+    if (pid > 0)
+      real_paths = get_mapped_paths_for_pid(pid);
+    else
+      real_paths = get_mapped_paths_for_running_pids();
+  }
+  else if (path.find('*') != std::string::npos)
+    real_paths = resolve_binary_path(path, pid);
   else
     real_paths.push_back(path);
   struct bcc_symbol_option symbol_option;
@@ -300,6 +334,8 @@ std::unique_ptr<std::istream> ProbeMatcher::get_symbols_from_usdt(
 
   if (pid > 0)
     usdt_probes = USDTHelper::probes_for_pid(pid);
+  else if (target == "*")
+    usdt_probes = USDTHelper::probes_for_all_pids();
   else if (!target.empty())
   {
     std::vector<std::string> real_paths;
@@ -333,30 +369,34 @@ std::unique_ptr<std::istream> ProbeMatcher::get_symbols_from_list(
 {
   std::string symbols;
   for (auto& probe : probes_list)
+  {
     symbols += probe.path + ":\n";
+    if (!probe.alias.empty())
+      symbols += probe.alias + ":\n";
+  }
   return std::make_unique<std::istringstream>(symbols);
 }
 
 /*
  * Get list of kernel probe types for the purpose of listing.
- * Ignore return probes.
+ * Ignore return probes and aliases.
  */
 std::unique_ptr<std::istream> ProbeMatcher::kernel_probe_list()
 {
   std::string probes;
   for (auto& p : PROBE_LIST)
   {
+    if (!p.show_in_kernel_list)
+    {
+      continue;
+    }
     if (p.type == ProbeType::kfunc)
     {
       // kfunc must be available
       if (bpftrace_->feature_->has_kfunc())
         probes += p.name + "\n";
     }
-    else if (p.name.find("ret") == std::string::npos &&
-             !is_userspace_probe(p.type) && p.type != ProbeType::interval &&
-             p.type != ProbeType::profile && p.type != ProbeType::watchpoint &&
-             p.type != ProbeType::asyncwatchpoint &&
-             p.type != ProbeType::special)
+    else
     {
       probes += p.name + "\n";
     }
@@ -374,8 +414,10 @@ std::unique_ptr<std::istream> ProbeMatcher::userspace_probe_list()
   std::string probes;
   for (auto& p : PROBE_LIST)
   {
-    if (p.name.find("ret") == std::string::npos && is_userspace_probe(p.type))
+    if (p.show_in_userspace_list)
+    {
       probes += p.name + "\n";
+    }
   }
 
   return std::make_unique<std::istringstream>(probes);
@@ -492,7 +534,23 @@ void ProbeMatcher::list_probes(ast::Program* prog)
 
       for (auto& match : matches)
       {
-        std::cout << probetypeName(probe_type) << ":" << match << std::endl;
+        std::string match_print = match;
+        if (ap->lang == "cpp")
+        {
+          std::string target = erase_prefix(match_print);
+          char* demangled_name = cxxdemangle(match_print.c_str());
+
+          // demangled name may contain symbols not accepted by the attach point
+          // parser, so surround it with quotes to make the entry directly
+          // usable as an attach point
+          auto func = demangled_name ? "\"" + std::string(demangled_name) + "\""
+                                     : match_print;
+
+          match_print = target + ":" + ap->lang + ":" + func;
+        }
+
+        std::cout << probetypeName(probe_type) << ":" << match_print
+                  << std::endl;
         if (bt_verbose)
         {
           for (auto& param : param_lists[match])
@@ -522,8 +580,6 @@ std::set<std::string> ProbeMatcher::get_matches_for_ap(
     case ProbeType::watchpoint:
     case ProbeType::asyncwatchpoint:
     case ProbeType::tracepoint:
-    case ProbeType::hardware:
-    case ProbeType::software:
     case ProbeType::kfunc:
     case ProbeType::kretfunc: {
       // Do not expand "target:" as that would match all functions in target.
@@ -532,6 +588,13 @@ std::set<std::string> ProbeMatcher::get_matches_for_ap(
         return { attach_point.target + ":" };
 
       search_input = attach_point.target + ":" + attach_point.func;
+      break;
+    }
+    case ProbeType::hardware:
+    case ProbeType::software:
+    case ProbeType::profile:
+    case ProbeType::interval: {
+      search_input = attach_point.target + ":";
       break;
     }
     case ProbeType::usdt:
@@ -558,23 +621,19 @@ std::set<std::string> ProbeMatcher::get_matches_for_ap(
       throw WildcardException(
           "Wildcard matches aren't available on probe type '" +
           attach_point.provider + "'");
-    case ProbeType::profile:
-    case ProbeType::interval:
-      // Wildcard matches are not supported on these probe types, however
-      // expansion can still happen when the probe builtin is used
-      return { "" };
   }
 
   return get_matches_for_probetype(probetype(attach_point.provider),
                                    attach_point.target,
-                                   search_input);
+                                   search_input,
+                                   attach_point.lang == "cpp");
 }
 
 std::set<std::string> ProbeMatcher::expand_probetype_kernel(
     const std::string& probe_type)
 {
   if (has_wildcard(probe_type))
-    return get_matches_in_stream(probe_type, false, *kernel_probe_list());
+    return get_matches_in_stream(probe_type, *kernel_probe_list());
   else
     return { probe_type };
 }
@@ -583,7 +642,7 @@ std::set<std::string> ProbeMatcher::expand_probetype_userspace(
     const std::string& probe_type)
 {
   if (has_wildcard(probe_type))
-    return get_matches_in_stream(probe_type, false, *userspace_probe_list());
+    return get_matches_in_stream(probe_type, *userspace_probe_list());
   else
     return { probe_type };
 }

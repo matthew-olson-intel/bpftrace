@@ -970,11 +970,6 @@ TEST(Parser, call_unknown_function)
 TEST(Parser, call_builtin)
 {
   // Builtins should not be usable as function
-  test_parse_failure("k:f { nsecs(); }");
-  test_parse_failure("k:f { nsecs  (); }");
-  test_parse_failure("k:f { nsecs(\"abc\"); }");
-  test_parse_failure("k:f { nsecs(123); }");
-
   test_parse_failure("k:f { probe(\"blah\"); }");
   test_parse_failure("k:f { probe(); }");
   test_parse_failure("k:f { probe(123); }");
@@ -1028,6 +1023,17 @@ TEST(Parser, uprobe)
   test("uprobe:/my/program:\"A::f\" { 1; }",
        "Program\n"
        " uprobe:/my/program:A::f\n"
+       "  int: 1\n");
+
+  // Language prefix
+  test("uprobe:/my/program:cpp:func { 1; }",
+       "Program\n"
+       " uprobe:/my/program:cpp:func\n"
+       "  int: 1\n");
+
+  test("uprobe:/my/dir+/program:1234abc { 1; }",
+       "Program\n"
+       " uprobe:/my/dir+/program:1234abc\n"
        "  int: 1\n");
 
   test_parse_failure("uprobe:f { 1 }");
@@ -1987,7 +1993,7 @@ TEST(Parser, non_fatal_errors)
   // displayed
   test_parse_failure("uprobe:asdf:Stream {} tracepoint:only_one_arg {}",
                      R"(
-stdin:1:22-46: ERROR: tracepoint probe type requires 2 arguments
+stdin:1:22-46: ERROR: tracepoint probe type requires 2 arguments, found 1
 uprobe:asdf:Stream {} tracepoint:only_one_arg {}
                      ~~~~~~~~~~~~~~~~~~~~~~~~
 )");

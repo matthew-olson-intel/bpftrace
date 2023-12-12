@@ -155,7 +155,7 @@ TEST(utils, resolve_binary_path)
   EXPECT_EQ(resolve_binary_path(path + "/executable*"), paths_all_executables);
   EXPECT_EQ(resolve_binary_path(path + "/*executable*"), paths_all_executables);
 
-  exec_system(("rm -rf " + path).c_str());
+  EXPECT_GT(std_filesystem::remove_all(path), 0);
 }
 
 TEST(utils, abs_path)
@@ -184,7 +184,8 @@ TEST(utils, abs_path)
   EXPECT_EQ(abs_path(std::string("/proc/1/root/usr/local/bin/usdt_test.so")),
             std::string("/proc/1/root/usr/local/bin/usdt_test.so"));
 
-  remove(rel_file.c_str());
+  EXPECT_TRUE(std_filesystem::remove(rel_file));
+  EXPECT_GT(std_filesystem::remove_all(path), 0);
 }
 
 TEST(utils, get_cgroup_hierarchy_roots)
@@ -238,6 +239,8 @@ TEST(utils, get_cgroup_path_in_hierarchy)
     EXPECT_EQ(get_cgroup_path_in_hierarchy(file_2_st.st_ino, tmpdir),
               "/subdir/file2");
   }
+
+  EXPECT_GT(std_filesystem::remove_all(tmpdir), 0);
 }
 
 TEST(utils, parse_kconfig)
@@ -260,6 +263,22 @@ TEST(utils, parse_kconfig)
   ASSERT_EQ(kconfig.config.find("CONFIG_NO"), kconfig.config.end());
 
   unlink(path);
+}
+
+TEST(utils, sanitiseBPFProgramName)
+{
+  const std::string name = "uprobe:/bin/bash:main+0x30";
+  const std::string sanitised = sanitise_bpf_program_name(name);
+  ASSERT_EQ(sanitised, "uprobe__bin_bash_main_0x30");
+
+  const std::string long_name =
+      "uretprobe:/this/is/a/very/long/path/to/a/binary/executable:"
+      "this_is_a_very_long_function_name_which_exceeds_the_KSYM_NAME_LEN_"
+      "limit_of_BPF_program_name";
+  const std::string long_sanitised = sanitise_bpf_program_name(long_name);
+  ASSERT_EQ(long_sanitised,
+            "uretprobe__this_is_a_very_long_path_to_a_binary_executable_this_"
+            "is_a_very_long_function_name_which_exceeds_the_ba30ddc67a52bad2");
 }
 
 } // namespace utils

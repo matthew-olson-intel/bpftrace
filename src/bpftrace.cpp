@@ -1,6 +1,7 @@
 #include <arpa/inet.h>
 #include <cassert>
 #include <cerrno>
+#include <cinttypes>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -29,10 +30,10 @@
 #include <bpf/libbpf.h>
 
 #include "ast/async_event_types.h"
+#include "bpfprogram.h"
 #include "bpftrace.h"
 #include "log.h"
 #include "printf.h"
-#include "relocator.h"
 #include "resolve_cgroupid.h"
 #include "triggers.h"
 #include "utils.h"
@@ -166,6 +167,64 @@ int BPFtrace::add_probe(ast::Probe &p)
         resources.probes.push_back(probe);
         continue;
       }
+
+      if ((probetype(attach_point->provider) == ProbeType::uprobe ||
+           probetype(attach_point->provider) == ProbeType::uretprobe) &&
+          feature_->has_uprobe_multi() && has_wildcard(attach_point->func) &&
+          !p.need_expansion && attach_funcs.size())
+      {
+        if (!has_wildcard(attach_point->target))
+        {
+          Probe probe;
+          probe.attach_point = attach_point->func;
+          probe.path = attach_point->target;
+          probe.type = probetype(attach_point->provider);
+          probe.log_size = log_size_;
+          probe.orig_name = p.name();
+          probe.name = attach_point->name(attach_point->target,
+                                          attach_point->func);
+          probe.index = p.index();
+          probe.funcs = attach_funcs;
+
+          resources.probes.push_back(probe);
+          continue;
+        }
+        else
+        {
+          // If we have a wildcard in the target path, we need to generate one
+          // probe per expanded target.
+          std::unordered_map<std::string, Probe> target_map;
+          for (const auto &func : attach_funcs)
+          {
+            std::string func_id = func;
+            std::string target = erase_prefix(func_id);
+            auto found = target_map.find(target);
+            if (found != target_map.end())
+            {
+              found->second.funcs.push_back(func);
+            }
+            else
+            {
+              Probe probe;
+              probe.attach_point = attach_point->func;
+              probe.path = target;
+              probe.type = probetype(attach_point->provider);
+              probe.log_size = log_size_;
+              probe.orig_name = p.name();
+              probe.name = attach_point->name(attach_point->target,
+                                              attach_point->func);
+              probe.index = p.index();
+              probe.funcs.push_back(func);
+              target_map.insert({ { target, probe } });
+            }
+          }
+          for (auto &pair : target_map)
+          {
+            resources.probes.push_back(std::move(pair.second));
+          }
+          continue;
+        }
+      }
     }
     else if ((probetype(attach_point->provider) == ProbeType::uprobe ||
               probetype(attach_point->provider) == ProbeType::uretprobe ||
@@ -178,18 +237,19 @@ int BPFtrace::add_probe(ast::Probe &p)
 
       struct symbol sym = {};
       int err = resolve_uname(attach_point->func, &sym, attach_point->target);
-      if (err < 0 || sym.address == 0)
+
+      if (attach_point->lang == "cpp")
       {
         // As the C++ language supports function overload, a given function name
         // (without parameters) could have multiple matches even when no
         // wildcards are used.
         matches = probe_matcher_->get_matches_for_ap(*attach_point);
-        attach_funcs.insert(attach_funcs.end(), matches.begin(), matches.end());
       }
-      else
-      {
-        attach_funcs.push_back(attach_point->target + ":" + attach_point->func);
-      }
+
+      if (err >= 0 && sym.address != 0)
+        matches.insert(attach_point->target + ":" + attach_point->func);
+
+      attach_funcs.insert(attach_funcs.end(), matches.begin(), matches.end());
     }
     else
     {
@@ -775,9 +835,11 @@ std::vector<std::unique_ptr<IPrintable>> BPFtrace::get_arg_values(const std::vec
         arg_values.push_back(
             std::make_unique<PrintableString>(resolve_timestamp(
                 reinterpret_cast<AsyncEvent::Strftime *>(arg_data + arg.offset)
+                    ->mode,
+                reinterpret_cast<AsyncEvent::Strftime *>(arg_data + arg.offset)
                     ->strftime_id,
                 reinterpret_cast<AsyncEvent::Strftime *>(arg_data + arg.offset)
-                    ->nsecs_since_boot)));
+                    ->nsecs)));
         break;
       case Type::pointer:
         arg_values.push_back(std::make_unique<PrintableInt>(
@@ -836,7 +898,7 @@ void perf_event_lost(void *cb_cookie, uint64_t lost)
 
 std::vector<std::unique_ptr<AttachedProbe>> BPFtrace::attach_usdt_probe(
     Probe &probe,
-    std::tuple<uint8_t *, uintptr_t> func,
+    BpfProgram &&program,
     int pid,
     bool file_activation)
 {
@@ -844,8 +906,8 @@ std::vector<std::unique_ptr<AttachedProbe>> BPFtrace::attach_usdt_probe(
 
   if (feature_->has_uprobe_refcnt() || !(file_activation && probe.path.size()))
   {
-    ret.emplace_back(
-        std::make_unique<AttachedProbe>(probe, func, pid, *feature_, *btf_));
+    ret.emplace_back(std::make_unique<AttachedProbe>(
+        probe, std::move(program), pid, *feature_, *btf_));
     return ret;
   }
 
@@ -906,7 +968,7 @@ std::vector<std::unique_ptr<AttachedProbe>> BPFtrace::attach_usdt_probe(
       }
 
       ret.emplace_back(std::make_unique<AttachedProbe>(
-          probe, func, pid_parsed, *feature_, *btf_));
+          probe, std::move(program), pid_parsed, *feature_, *btf_));
       break;
     }
   }
@@ -922,14 +984,6 @@ std::vector<std::unique_ptr<AttachedProbe>> BPFtrace::attach_probe(
     BpfBytecode &bytecode)
 {
   std::vector<std::unique_ptr<AttachedProbe>> ret;
-  auto get_section = [](BpfBytecode &bytecode, const std::string &name)
-      -> std::optional<std::tuple<uint8_t *, size_t>> {
-    auto sec = bytecode.find(name);
-    if (sec == bytecode.end())
-      return std::nullopt;
-    return std::make_tuple(sec->second.data(), sec->second.size());
-  };
-
   // use the single-probe program if it exists (as is the case with wildcards
   // and the name builtin, which must be expanded into separate programs per
   // probe), else try to find a the program based on the original probe name
@@ -946,13 +1000,17 @@ std::vector<std::unique_ptr<AttachedProbe>> BPFtrace::attach_probe(
                                               probe.index,
                                               usdt_location_idx);
 
-  auto section = get_section(bytecode, name);
-  if (!section)
+  auto program = BpfProgram::CreateFromBytecode(bytecode, name, maps);
+  if (!program)
   {
-    section = get_section(bytecode, orig_name);
+    auto orig_program = BpfProgram::CreateFromBytecode(bytecode,
+                                                       orig_name,
+                                                       maps);
+    if (orig_program)
+      program.emplace(std::move(*orig_program));
   }
 
-  if (!section)
+  if (!program)
   {
     if (probe.name != probe.orig_name)
       LOG(ERROR) << "Code not generated for probe: " << probe.name
@@ -962,18 +1020,14 @@ std::vector<std::unique_ptr<AttachedProbe>> BPFtrace::attach_probe(
     return ret;
   }
 
-  // Make a copy of the bytecode and perform relocations
-  //
-  // We choose not to modify the original bytecode to void keeping
-  // track of state when the same bytecode is attached to multiple probes.
-  std::vector<uint8_t> relocated;
-  relocated.reserve(std::get<1>(*section));
-  memcpy(relocated.data(), std::get<0>(*section), std::get<1>(*section));
-  std::get<0>(*section) = relocated.data();
-  auto relocator = Relocator(*section, *this);
-  if (relocator.relocate())
+  try
   {
-    LOG(ERROR) << "Failed to relocate insns for probe: " << probe.name;
+    program->assemble();
+  }
+  catch (const std::runtime_error &ex)
+  {
+    LOG(ERROR) << "Failed to assemble program for probe: " << probe.name << ", "
+               << ex.what();
     return ret;
   }
 
@@ -983,23 +1037,31 @@ std::vector<std::unique_ptr<AttachedProbe>> BPFtrace::attach_probe(
 
     if (probe.type == ProbeType::usdt)
     {
-      auto aps = attach_usdt_probe(probe, *section, pid, usdt_file_activation_);
+      auto aps = attach_usdt_probe(
+          probe, std::move(*program), pid, usdt_file_activation_);
       for (auto &ap : aps)
         ret.emplace_back(std::move(ap));
 
+      return ret;
+    }
+    else if (probe.type == ProbeType::uprobe ||
+             probe.type == ProbeType::uretprobe)
+    {
+      ret.emplace_back(std::make_unique<AttachedProbe>(
+          probe, std::move(*program), pid, *feature_, *btf_, safe_mode_));
       return ret;
     }
     else if (probe.type == ProbeType::watchpoint ||
              probe.type == ProbeType::asyncwatchpoint)
     {
       ret.emplace_back(std::make_unique<AttachedProbe>(
-          probe, *section, pid, *feature_, *btf_));
+          probe, std::move(*program), pid, *feature_, *btf_));
       return ret;
     }
     else
     {
       ret.emplace_back(std::make_unique<AttachedProbe>(
-          probe, *section, safe_mode_, *feature_, *btf_));
+          probe, std::move(*program), safe_mode_, *feature_, *btf_));
       return ret;
     }
   }
@@ -1060,7 +1122,7 @@ bool attach_reverse(const Probe &p)
 
 int BPFtrace::run_special_probe(std::string name,
                                 BpfBytecode &bytecode,
-                                void (*trigger)(void))
+                                trigger_fn_t trigger)
 {
   for (auto probe = resources.special_probes.rbegin();
        probe != resources.special_probes.rend();
@@ -1068,10 +1130,6 @@ int BPFtrace::run_special_probe(std::string name,
   {
     if ((*probe).attach_point == name)
     {
-      // This is only necessary for uprobe fallback case but it doesn't hurt
-      // to set for raw_tp
-      probe->pid = getpid();
-
       auto aps = attach_probe(*probe, bytecode);
       if (aps.size() != 1)
         return -1;
@@ -1214,7 +1272,12 @@ int BPFtrace::run(BpfBytecode bytecode)
     }
   }
 
-  if (run_special_probe("BEGIN_trigger", bytecode_, BEGIN_trigger))
+  // XXX: cast is a workaround for a gcc bug that causes an "invalid conversion"
+  // error here in case the trigger function has the `target` attribute set (see
+  // triggers.h): https://gcc.godbolt.org/z/44b5MjdbT
+  if (run_special_probe("BEGIN_trigger",
+                        bytecode_,
+                        reinterpret_cast<trigger_fn_t>(BEGIN_trigger)))
     return -1;
 
   if (child_ && has_usdt_)
@@ -1303,7 +1366,9 @@ int BPFtrace::run(BpfBytecode bytecode)
   finalize_ = false;
   exitsig_recv = false;
 
-  if (run_special_probe("END_trigger", bytecode_, END_trigger))
+  if (run_special_probe("END_trigger",
+                        bytecode_,
+                        reinterpret_cast<trigger_fn_t>(END_trigger)))
     return -1;
 
   poll_output(/* drain */ true);
@@ -1964,7 +2029,7 @@ std::string BPFtrace::get_stack(int64_t stackid,
   return stack.str();
 }
 
-std::string BPFtrace::resolve_uid(uintptr_t addr) const
+std::string BPFtrace::resolve_uid(uint64_t addr) const
 {
   std::string file_name = "/etc/passwd";
   std::string uid = std::to_string(addr);
@@ -1996,21 +2061,32 @@ std::string BPFtrace::resolve_uid(uintptr_t addr) const
   return username;
 }
 
-std::string BPFtrace::resolve_timestamp(uint32_t strftime_id,
-                                        uint64_t nsecs_since_boot)
+std::string BPFtrace::resolve_timestamp(uint32_t mode,
+                                        uint32_t strftime_id,
+                                        uint64_t nsecs)
 {
   static const auto usec_regex = std::regex("%f");
+  TimestampMode ts_mode = static_cast<TimestampMode>(mode);
+  struct timespec zero = {};
+  struct timespec *basetime = &zero;
 
-  if (!boottime_)
+  if (ts_mode == TimestampMode::boot)
   {
-    LOG(ERROR) << "Cannot resolve timestamp due to failed boot time calcuation";
-    return "(?)";
+    if (!boottime_)
+    {
+      LOG(ERROR)
+          << "Cannot resolve timestamp due to failed boot time calculation";
+      return "(?)";
+    }
+    else
+    {
+      basetime = &boottime_.value();
+    }
   }
 
   // Calculate and localize timestamp
   struct tm tmp;
-  time_t time = boottime_->tv_sec +
-                ((boottime_->tv_nsec + nsecs_since_boot) / 1e9);
+  time_t time = basetime->tv_sec + ((basetime->tv_nsec + nsecs) / 1e9);
   if (!localtime_r(&time, &tmp))
   {
     LOG(ERROR) << "localtime_r: " << strerror(errno);
@@ -2019,9 +2095,9 @@ std::string BPFtrace::resolve_timestamp(uint32_t strftime_id,
 
   // Process strftime() format string extensions
   const auto &raw_fmt = resources.strftime_args[strftime_id];
-  uint64_t us = ((boottime_->tv_nsec + nsecs_since_boot) % 1000000000) / 1000;
+  uint64_t us = ((basetime->tv_nsec + nsecs) % 1000000000) / 1000;
   char usecs_buf[7];
-  snprintf(usecs_buf, sizeof(usecs_buf), "%06lu", us);
+  snprintf(usecs_buf, sizeof(usecs_buf), "%06" PRIu64, us);
   auto fmt = std::regex_replace(raw_fmt, usec_regex, usecs_buf);
 
   char timestr[strlen_];
@@ -2038,7 +2114,7 @@ std::string BPFtrace::resolve_buf(char *buf, size_t size)
   return hex_format_buffer(buf, size);
 }
 
-std::string BPFtrace::resolve_ksym(uintptr_t addr, bool show_offset)
+std::string BPFtrace::resolve_ksym(uint64_t addr, bool show_offset)
 {
   struct bcc_symbol ksym;
   std::ostringstream symbol;
@@ -2117,7 +2193,8 @@ int BPFtrace::resolve_uname(const std::string &name,
   sym->name = name;
   struct bcc_symbol_option option;
   memset(&option, 0, sizeof(option));
-  option.use_symbol_type = (1 << STT_OBJECT);
+  option.use_symbol_type = (1 << STT_OBJECT | 1 << STT_FUNC |
+                            1 << STT_GNU_IFUNC);
 
   return bcc_elf_foreach_sym(path.c_str(), sym_resolve_callback, &option, sym);
 }
@@ -2272,7 +2349,7 @@ bool BPFtrace::is_aslr_enabled(int pid)
   return false;
 }
 
-std::string BPFtrace::resolve_usym(uintptr_t addr,
+std::string BPFtrace::resolve_usym(uint64_t addr,
                                    int pid,
                                    int probe_id,
                                    bool show_offset,
@@ -2503,13 +2580,22 @@ std::optional<int64_t> BPFtrace::get_int_literal(
   return std::nullopt;
 }
 
+const FuncsModulesMap &BPFtrace::get_traceable_funcs() const
+{
+  if (traceable_funcs_.empty())
+    traceable_funcs_ = parse_traceable_funcs();
+
+  return traceable_funcs_;
+}
+
 bool BPFtrace::is_traceable_func(const std::string &func_name) const
 {
 #ifdef FUZZ
   (void)func_name;
   return true;
 #else
-  return traceable_funcs_.find(func_name) != traceable_funcs_.end();
+  auto &funcs = get_traceable_funcs();
+  return funcs.find(func_name) != funcs.end();
 #endif
 }
 
@@ -2520,9 +2606,9 @@ std::unordered_set<std::string> BPFtrace::get_func_modules(
   (void)func_name;
   return {};
 #else
-  auto mod = traceable_funcs_.find(func_name);
-  return mod != traceable_funcs_.end() ? mod->second
-                                       : std::unordered_set<std::string>();
+  auto &funcs = get_traceable_funcs();
+  auto mod = funcs.find(func_name);
+  return mod != funcs.end() ? mod->second : std::unordered_set<std::string>();
 #endif
 }
 

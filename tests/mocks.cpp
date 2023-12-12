@@ -38,26 +38,36 @@ void setup_mock_probe_matcher(MockProbeMatcher &matcher)
                          "/bin/sh:second_open\n"
                          "/bin/sh:open_as_well\n"
                          "/bin/sh:something_else\n"
+                         "/bin/sh:cpp_mangled\n"
                          "/bin/sh:_Z11cpp_mangledi\n"
-                         "/bin/sh:_Z11cpp_mangledv\n";
+                         "/bin/sh:_Z11cpp_mangledv\n"
+                         "/bin/sh:_Z18cpp_mangled_suffixv\n";
   std::string bash_usyms = "/bin/bash:first_open\n";
-  ON_CALL(matcher, get_func_symbols_from_file("/bin/sh"))
-      .WillByDefault([sh_usyms](const std::string &) {
+  std::string proc_usyms = "/proc/1234/exe:third_open\n";
+  ON_CALL(matcher, get_func_symbols_from_file(_, "/bin/sh"))
+      .WillByDefault([sh_usyms](int, const std::string &) {
         return std::unique_ptr<std::istream>(new std::istringstream(sh_usyms));
       });
 
-  ON_CALL(matcher, get_func_symbols_from_file("/bin/*sh"))
-      .WillByDefault([sh_usyms, bash_usyms](const std::string &) {
+  ON_CALL(matcher, get_func_symbols_from_file(_, "/bin/*sh"))
+      .WillByDefault([sh_usyms, bash_usyms](int, const std::string &) {
         return std::unique_ptr<std::istream>(
             new std::istringstream(sh_usyms + bash_usyms));
       });
+  ON_CALL(matcher, get_func_symbols_from_file(_, "*"))
+      .WillByDefault(
+          [sh_usyms, bash_usyms, proc_usyms](int, const std::string &) {
+            return std::unique_ptr<std::istream>(
+                new std::istringstream(sh_usyms + bash_usyms + proc_usyms));
+          });
 
   std::string sh_usdts = "/bin/sh:prov1:tp1\n"
                          "/bin/sh:prov1:tp2\n"
                          "/bin/sh:prov2:tp\n"
                          "/bin/sh:prov2:notatp\n"
                          "/bin/sh:nahprov:tp\n";
-  std::string bash_usdts = "/bin/bash:prov1:tp3";
+  std::string bash_usdts = "/bin/bash:prov1:tp3\n";
+  std::string proc_usdts = "/proc/1234/exe:prov2:tp4\n";
   ON_CALL(matcher, get_symbols_from_usdt(_, "/bin/sh"))
       .WillByDefault([sh_usdts](int, const std::string &) {
         return std::unique_ptr<std::istream>(new std::istringstream(sh_usdts));
@@ -67,6 +77,12 @@ void setup_mock_probe_matcher(MockProbeMatcher &matcher)
         return std::unique_ptr<std::istream>(
             new std::istringstream(sh_usdts + bash_usdts));
       });
+  ON_CALL(matcher, get_symbols_from_usdt(_, "*"))
+      .WillByDefault(
+          [sh_usdts, bash_usdts, proc_usdts](int, const std::string &) {
+            return std::unique_ptr<std::istream>(
+                new std::istringstream(sh_usdts + bash_usdts + proc_usdts));
+          });
 }
 
 void setup_mock_bpftrace(MockBPFtrace &bpftrace)

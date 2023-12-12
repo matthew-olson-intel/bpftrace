@@ -17,6 +17,7 @@ add_library(runtime
   attached_probe.cpp
   bpffeature.cpp
   bpftrace.cpp
+  bpfprogram.cpp
   btf.cpp
   child.cpp
   disasm.cpp
@@ -31,7 +32,6 @@ add_library(runtime
   probe_matcher.cpp
   procmon.cpp
   printf.cpp
-  relocator.cpp
   resolve_cgroupid.cpp
   required_resources.cpp
   struct.cpp
@@ -113,15 +113,12 @@ target_include_directories(runtime PRIVATE ${CMAKE_BINARY_DIR})
 target_include_directories(runtime PRIVATE ${CMAKE_SOURCE_DIR}/src)
 target_include_directories(runtime PRIVATE ${CMAKE_SOURCE_DIR}/src/ast)
 target_compile_definitions(runtime PRIVATE ${BPFTRACE_FLAGS})
+target_include_directories(libbpftrace PRIVATE ${CMAKE_CURRENT_BINARY_DIR})
 target_compile_definitions(libbpftrace PRIVATE ${BPFTRACE_FLAGS})
 
 # Linking
 if(STATIC_LINKING)
-  if(STATIC_LIBC)
-    target_link_options(${BPFTRACE} BEFORE PRIVATE "-static")
-  else()
-    target_link_options(${BPFTRACE} BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")
-  endif(STATIC_LIBC)
+  target_link_options(${BPFTRACE} BEFORE PRIVATE "-static-libgcc" "-static-libstdc++")
 endif(STATIC_LINKING)
 
 
@@ -133,7 +130,7 @@ if(LIBPCAP_FOUND)
 endif(LIBPCAP_FOUND)
 
 if(HAVE_BFD_DISASM)
-  if(STATIC_LINKING)
+  if(STATIC_LINKING OR LIBBFD_STATIC)
     add_library(LIBBFD STATIC IMPORTED)
     set_property(TARGET LIBBFD PROPERTY IMPORTED_LOCATION ${LIBBFD_LIBRARIES})
     target_link_libraries(runtime LIBBFD)
@@ -143,10 +140,22 @@ if(HAVE_BFD_DISASM)
     add_library(LIBIBERTY STATIC IMPORTED)
     set_property(TARGET LIBIBERTY PROPERTY IMPORTED_LOCATION ${LIBIBERTY_LIBRARIES})
     target_link_libraries(runtime LIBIBERTY)
+
+    add_library(LIBZSTD STATIC IMPORTED)
+    if (LIBZSTD_FOUND)
+      set_property(TARGET LIBZSTD PROPERTY IMPORTED_LOCATION ${LIBZSTD_LIBRARIES})
+      target_link_libraries(runtime LIBZSTD)
+    endif(LIBZSTD_FOUND)
+
+    add_library(LIBSFRAME STATIC IMPORTED)
+    if (LIBSFRAME_FOUND)
+      set_property(TARGET LIBSFRAME PROPERTY IMPORTED_LOCATION ${LIBSFRAME_LIBRARIES})
+      target_link_libraries(runtime LIBSFRAME)
+    endif()
   else()
     target_link_libraries(runtime ${LIBBFD_LIBRARIES})
     target_link_libraries(runtime ${LIBOPCODES_LIBRARIES})
-  endif(STATIC_LINKING)
+  endif(STATIC_LINKING OR LIBBFD_STATIC)
 endif(HAVE_BFD_DISASM)
 
 # Link to bcc libraries (without LLVM) if possible
@@ -156,7 +165,7 @@ else()
   target_link_libraries(runtime ${LIBBCC_LIBRARIES})
 endif()
 
-if(STATIC_BPF_BCC)
+if(STATIC_LINKING)
   # These are not part of the static libbcc so have to be added separate
   target_link_libraries(runtime ${LIBBCC_BPF_LIBRARIES})
   target_link_libraries(runtime ${LIBBPF_LIBRARIES})
@@ -167,7 +176,7 @@ if(STATIC_BPF_BCC)
   target_link_libraries(runtime LIBELF)
 else()
   target_link_libraries(runtime ${LIBELF_LIBRARIES})
-endif(STATIC_BPF_BCC)
+endif(STATIC_LINKING)
 
 if (LIBDW_FOUND)
   if(STATIC_LINKING)
@@ -233,9 +242,6 @@ if (STATIC_LINKING)
     target_link_libraries(runtime "-Wl,-Bdynamic" "-lrt" "-lpthread" "-ldl" "-lm")
     target_link_libraries(runtime "-Wl,-Bstatic" "-lz")
   endif()
-elseif(STATIC_BPF_BCC)
-  # partial static build, libbpf needs zlib, bcc needs liblzma
-  target_link_libraries(runtime "-lz" "-llzma")
 endif()
 
 unset(MAIN_SRC)
@@ -245,3 +251,4 @@ add_subdirectory(aot)
 add_subdirectory(arch)
 add_subdirectory(ast)
 add_subdirectory(cxxdemangler)
+add_subdirectory(resources)

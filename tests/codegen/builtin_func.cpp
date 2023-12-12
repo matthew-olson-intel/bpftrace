@@ -11,8 +11,12 @@ TEST(codegen, builtin_func)
 
 TEST(codegen, builtin_func_uprobe)
 {
-  auto bpftrace = get_mock_bpftrace();
-  test(*bpftrace, "uprobe:/bin/sh:f { @x = func }", NAME);
+  test("uprobe:/bin/sh:f { @x = func }", NAME);
+}
+
+TEST(codegen, builtin_func_kfunc)
+{
+  test("kfunc:f { @x = func }", NAME);
 }
 
 } // namespace codegen

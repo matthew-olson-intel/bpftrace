@@ -6,9 +6,9 @@ target triple = "bpf-pc-linux"
 ; Function Attrs: nounwind
 declare i64 @llvm.bpf.pseudo(i64 %0, i64 %1) #0
 
-define i64 @"kfunc:vmlinux:tcp_sendmsg"(i8* %0) section "s_kfunc:vmlinux:tcp_sendmsg_1" {
+define i64 @"kfunc:mock_vmlinux:tcp_sendmsg"(i8* %0) section "s_kfunc:mock_vmlinux:tcp_sendmsg_1" !dbg !4 {
 entry:
-  %"@_val" = alloca i64, align 8
+  %initial_value = alloca i64, align 8
   %lookup_elem_val = alloca i64, align 8
   %"@_key" = alloca i64, align 8
   %1 = ptrtoint i8* %0 to i64
@@ -33,27 +33,25 @@ entry:
 lookup_success:                                   ; preds = %entry
   %cast1 = bitcast i8* %lookup_elem to i64*
   %10 = load i64, i64* %cast1, align 8
-  store i64 %10, i64* %lookup_elem_val, align 8
+  %11 = add i64 %10, 1
+  store i64 %11, i64* %cast1, align 8
   br label %lookup_merge
 
 lookup_failure:                                   ; preds = %entry
-  store i64 0, i64* %lookup_elem_val, align 8
+  %12 = bitcast i64* %initial_value to i8*
+  call void @llvm.lifetime.start.p0i8(i64 -1, i8* %12)
+  store i64 1, i64* %initial_value, align 8
+  %pseudo2 = call i64 @llvm.bpf.pseudo(i64 1, i64 0)
+  %update_elem = call i64 inttoptr (i64 2 to i64 (i64, i64*, i64*, i64)*)(i64 %pseudo2, i64* %"@_key", i64* %initial_value, i64 1)
+  %13 = bitcast i64* %initial_value to i8*
+  call void @llvm.lifetime.end.p0i8(i64 -1, i8* %13)
   br label %lookup_merge
 
 lookup_merge:                                     ; preds = %lookup_failure, %lookup_success
-  %11 = load i64, i64* %lookup_elem_val, align 8
-  %12 = bitcast i64* %lookup_elem_val to i8*
-  call void @llvm.lifetime.end.p0i8(i64 -1, i8* %12)
-  %13 = bitcast i64* %"@_val" to i8*
-  call void @llvm.lifetime.start.p0i8(i64 -1, i8* %13)
-  %14 = add i64 %11, 1
-  store i64 %14, i64* %"@_val", align 8
-  %pseudo2 = call i64 @llvm.bpf.pseudo(i64 1, i64 0)
-  %update_elem = call i64 inttoptr (i64 2 to i64 (i64, i64*, i64*, i64)*)(i64 %pseudo2, i64* %"@_key", i64* %"@_val", i64 0)
-  %15 = bitcast i64* %"@_val" to i8*
+  %14 = bitcast i64* %lookup_elem_val to i8*
+  call void @llvm.lifetime.end.p0i8(i64 -1, i8* %14)
+  %15 = bitcast i64* %"@_key" to i8*
   call void @llvm.lifetime.end.p0i8(i64 -1, i8* %15)
-  %16 = bitcast i64* %"@_key" to i8*
-  call void @llvm.lifetime.end.p0i8(i64 -1, i8* %16)
   ret i64 0
 }
 
@@ -65,3 +63,20 @@ declare void @llvm.lifetime.end.p0i8(i64 immarg %0, i8* nocapture %1) #1
 
 attributes #0 = { nounwind }
 attributes #1 = { argmemonly nofree nosync nounwind willreturn }
+
+!llvm.dbg.cu = !{!0}
+!llvm.module.flags = !{!3}
+
+!0 = distinct !DICompileUnit(language: DW_LANG_C, file: !1, producer: "bpftrace", isOptimized: false, runtimeVersion: 0, emissionKind: LineTablesOnly, enums: !2)
+!1 = !DIFile(filename: "bpftrace.bpf.o", directory: ".")
+!2 = !{}
+!3 = !{i32 2, !"Debug Info Version", i32 3}
+!4 = distinct !DISubprogram(name: "kfunc_mock_vmlinux_tcp_sendmsg", linkageName: "kfunc_mock_vmlinux_tcp_sendmsg", scope: !1, file: !1, type: !5, flags: DIFlagPrototyped, spFlags: DISPFlagDefinition, unit: !0, retainedNodes: !10)
+!5 = !DISubroutineType(types: !6)
+!6 = !{!7, !8}
+!7 = !DIBasicType(name: "int64", size: 64, encoding: DW_ATE_signed)
+!8 = !DIDerivedType(tag: DW_TAG_pointer_type, baseType: !9, size: 64)
+!9 = !DIBasicType(name: "int8", size: 8, encoding: DW_ATE_signed)
+!10 = !{!11, !12}
+!11 = !DILocalVariable(name: "var0", scope: !4, file: !1, type: !7)
+!12 = !DILocalVariable(name: "var1", arg: 1, scope: !4, file: !1, type: !8)

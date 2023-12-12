@@ -155,10 +155,14 @@ static std::vector<std::string> UNSAFE_BUILTIN_FUNCS = {
 
 static std::vector<std::string> COMPILE_TIME_FUNCS = { "cgroupid" };
 
+static std::vector<std::string> UPROBE_LANGS = { "cpp" };
+
 bool get_uint64_env_var(const ::std::string &str, uint64_t &dest);
 bool get_bool_env_var(const ::std::string &str, bool &dest, bool neg = false);
 std::string get_pid_exe(pid_t pid);
 std::string get_pid_exe(const std::string &pid);
+std::string get_proc_maps(const std::string &pid);
+std::string get_proc_maps(pid_t pid);
 bool has_wildcard(const std::string &str);
 std::vector<std::string> split_string(const std::string &str,
                                       char delimiter,
@@ -176,7 +180,7 @@ std::vector<int> get_possible_cpus();
 bool is_dir(const std::string &path);
 std::tuple<std::string, std::string> get_kernel_dirs(
     const struct utsname &utsname,
-    bool unpack_kheaders);
+    bool unpack_kheaders = true);
 std::vector<std::string> get_kernel_cflags(const char *uname_machine,
                                            const std::string &ksrc,
                                            const std::string &kobj,
@@ -187,10 +191,11 @@ std::vector<std::pair<std::string, std::string>> get_cgroup_hierarchy_roots();
 std::vector<std::pair<std::string, std::string>> get_cgroup_paths(
     uint64_t cgroupid,
     std::string filter);
-FuncsModulesMap get_traceable_funcs();
+FuncsModulesMap parse_traceable_funcs();
 const std::string &is_deprecated(const std::string &str);
 bool is_unsafe_func(const std::string &func_name);
 bool is_compile_time_func(const std::string &func_name);
+bool is_supported_lang(const std::string &lang);
 std::string exec_system(const char *cmd);
 std::vector<std::string> resolve_binary_path(const std::string &cmd);
 std::vector<std::string> resolve_binary_path(const std::string &cmd, int pid);
@@ -213,6 +218,8 @@ std::pair<std::string, std::string> split_symbol_module(
 std::tuple<std::string, std::string, std::string> split_addrrange_symbol_module(
     const std::string &symbol);
 
+std::vector<std::string> get_mapped_paths_for_pid(pid_t pid);
+std::vector<std::string> get_mapped_paths_for_running_pids();
 struct elf_symbol
 {
   std::string name;
@@ -226,7 +233,9 @@ struct elf_symbol
 std::map<uintptr_t, elf_symbol, std::greater<>> get_symbol_table_for_elf(
     const std::string &elf_file);
 std::vector<int> get_pids_for_program(const std::string &program);
+std::vector<int> get_all_running_pids();
 
+std::string sanitise_bpf_program_name(const std::string &name);
 // Generate object file section name for a given probe
 inline std::string get_section_name_for_probe(
     const std::string &probe_name,
@@ -308,8 +317,5 @@ inline void hash_combine(std::size_t &seed, const T &value)
   std::hash<T> hasher;
   seed ^= hasher(value) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
 }
-
-// Returns the width in bits of kernel pointers.
-int get_kernel_ptr_width();
 
 } // namespace bpftrace

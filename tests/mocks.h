@@ -28,8 +28,9 @@ public:
   MOCK_CONST_METHOD2(get_symbols_from_usdt,
                      std::unique_ptr<std::istream>(int pid,
                                                    const std::string &target));
-  MOCK_CONST_METHOD1(get_func_symbols_from_file,
-                     std::unique_ptr<std::istream>(const std::string &path));
+  MOCK_CONST_METHOD2(get_func_symbols_from_file,
+                     std::unique_ptr<std::istream>(int pid,
+                                                   const std::string &path));
 #pragma GCC diagnostic pop
 };
 
@@ -51,7 +52,7 @@ public:
   {
     (void)path;
     sym->name = name;
-    if (name == "cpp_mangled" || name == "cpp_mangled(int)")
+    if (name == "cpp_mangled(int)")
     {
       return -1;
     }
@@ -75,6 +76,12 @@ public:
     return true;
   }
 
+  std::unordered_set<std::string> get_func_modules(
+      const std::string &__attribute__((unused))) const override
+  {
+    return { "mock_vmlinux" };
+  }
+
   void set_mock_probe_matcher(std::unique_ptr<MockProbeMatcher> probe_matcher)
   {
     probe_matcher_ = std::move(probe_matcher);
@@ -84,11 +91,6 @@ public:
   bool has_kprobe_multi(void)
   {
     return feature_->has_kprobe_multi();
-  }
-
-  bool has_loop(void)
-  {
-    return feature_->has_loop();
   }
 
   MockProbeMatcher *mock_probe_matcher;
@@ -114,7 +116,16 @@ public:
     has_kprobe_multi_ = std::make_optional<bool>(has_features);
     has_skb_output_ = std::make_optional<bool>(has_features);
     map_ringbuf_ = std::make_optional<bool>(has_features);
+    has_ktime_get_tai_ns_ = std::make_optional<bool>(has_features);
+    has_get_func_ip_ = std::make_optional<bool>(has_features);
+    has_jiffies64_ = std::make_optional<bool>(has_features);
   };
+
+  void has_loop(bool has)
+  {
+    has_loop_ = std::make_optional<bool>(has);
+  }
+
   bool has_features_;
 };
 

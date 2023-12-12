@@ -11,6 +11,7 @@
 #include <llvm/IR/Module.h>
 #include <llvm/Support/raw_os_ostream.h>
 
+#include "ast/dibuilderbpf.h"
 #include "ast/irbuilderbpf.h"
 #include "ast/visitors.h"
 #include "bpftrace.h"
@@ -189,6 +190,11 @@ private:
                                    const SizedType &data_type,
                                    const SizedType &elem_type,
                                    ScopedExprDeleter &scoped_del);
+  void readDatastructElemFromStack(Value *src_data,
+                                   Value *index,
+                                   llvm::Type *data_type,
+                                   const SizedType &elem_type,
+                                   ScopedExprDeleter &scoped_del);
   void probereadDatastructElem(Value *src_data,
                                Value *offset,
                                const SizedType &data_type,
@@ -198,6 +204,8 @@ private:
                                const std::string &temp_name);
 
   void createIncDec(Unop &unop);
+
+  Function *createMapLenCallback();
 
   // Return a lambda that has captured-by-value CodegenLLVM's async id state
   // (ie `printf_id_`, `mapped_printf_id_`, etc.).  Running the returned lambda
@@ -212,6 +220,8 @@ private:
   std::unique_ptr<TargetMachine> target_machine_;
   std::unique_ptr<Module> module_;
   IRBuilderBPF b_;
+
+  DIBuilderBPF debug_;
 
   const DataLayout &datalayout() const
   {

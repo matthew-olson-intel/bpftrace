@@ -59,6 +59,30 @@ REQUIRES_FEATURE btf
 TIMEOUT 5
 AFTER ./testprogs/syscall read
 
+NAME kfunc func builtin
+PROG kfunc:vfs_read { printf("func: %s\n", func); exit(); }
+EXPECT func: vfs_read
+REQUIRES_FEATURE kfunc
+REQUIRES_FEATURE btf
+REQUIRES_FEATURE get_func_ip
+TIMEOUT 5
+AFTER ./testprogs/syscall read
+
+# Sanity check for fentry/fexit alias
+NAME fentry
+PROG fentry:vfs_read { printf("SUCCESS %d\n", pid); exit(); }
+EXPECT SUCCESS [0-9][0-9]*
+REQUIRES_FEATURE kfunc
+TIMEOUT 5
+AFTER ./testprogs/syscall read
+
+NAME fexit
+PROG fexit:vfs_read { printf("SUCCESS %d\n", pid); exit(); }
+EXPECT SUCCESS [0-9][0-9]*
+REQUIRES_FEATURE kfunc
+TIMEOUT 5
+AFTER ./testprogs/syscall read
+
 NAME kprobe
 PROG kprobe:vfs_read { printf("SUCCESS %d\n", pid); exit(); }
 EXPECT SUCCESS [0-9][0-9]*
@@ -101,6 +125,14 @@ EXPECT link: 1
 TIMEOUT 5
 REQUIRES /usr/sbin/bpftool
 REQUIRES_FEATURE kprobe_multi
+
+NAME uprobe_multi_wildcard
+RUN {{BPFTRACE}} --unsafe -e 'uprobe:./testprogs/uprobe_test:uprobeFunction* { printf("link: "); system("/usr/sbin/bpftool link | grep -E \"uprobe_multi|type 12\" | wc -l"); exit(); }'
+EXPECT link: 1
+TIMEOUT 5
+REQUIRES /usr/sbin/bpftool
+REQUIRES_FEATURE uprobe_multi
+AFTER ./testprogs/uprobe_test
 
 NAME kprobe_wildcard probe builtin
 RUN {{BPFTRACE}} --unsafe -e 'kprobe:ksys_* { @ = probe; printf("progs: "); system("/usr/sbin/bpftool prog | grep kprobe | grep ksys_ | wc -l"); exit(); }'
@@ -181,6 +213,22 @@ EXPECT link: 1
 TIMEOUT 5
 REQUIRES /usr/sbin/bpftool
 REQUIRES_FEATURE kprobe_multi
+
+NAME uretprobe_multi_wildcard
+RUN {{BPFTRACE}} --unsafe -e 'uretprobe:./testprogs/uprobe_test:uprobeFunction* { printf("link: "); system("/usr/sbin/bpftool link | grep -E \"uprobe_multi|type 12\" | wc -l"); exit(); }'
+EXPECT link: 1
+TIMEOUT 5
+REQUIRES /usr/sbin/bpftool
+REQUIRES_FEATURE uprobe_multi
+AFTER ./testprogs/uprobe_test
+
+NAME uprobe_multi_wildcard_target_wildcard
+RUN {{BPFTRACE}} --unsafe -e 'uretprobe:*:uprobeFunction* { printf("link: "); system("/usr/sbin/bpftool link | grep -E \"uprobe_multi|type 12\" | wc -l"); exit(); }' -p {{BEFORE_PID}}
+EXPECT link: 1
+TIMEOUT 5
+REQUIRES /usr/sbin/bpftool
+REQUIRES_FEATURE uprobe_multi
+BEFORE ./testprogs/uprobe_test
 
 NAME uprobe
 PROG uprobe:/bin/bash:echo_builtin { printf("arg0: %d\n", arg0); exit();}
@@ -359,19 +407,30 @@ EXPECT interval:ms:1
 TIMEOUT 5
 
 NAME software
-PROG software:faults:1 { @[comm] = count(); exit();}
+PROG software:cpu-clock:1 { @[comm] = count(); exit();}
 EXPECT @\[.*\]\:\s[0-9]*
 TIMEOUT 5
 
-NAME software_order
-RUN {{BPFTRACE}} runtime/scripts/software_order.bt
-EXPECT first second
+NAME software_probe_builtin
+PROG software:cpu-clock:1 { print(probe); exit();}
+EXPECT software:cpu-clock:1
+TIMEOUT 5
+
+NAME software_alias_probe_builtin
+PROG software:cpu:1 { print(probe); exit();}
+EXPECT software:cpu:1
 TIMEOUT 5
 
 NAME hardware
 REQUIRES ls /sys/devices/cpu/events/cache-misses
 PROG hardware:cache-misses:10 { @[pid] = count(); exit(); }
 EXPECT @\[.*\]\:\s[0-9]*
+TIMEOUT 5
+
+NAME hardware_probe_builtin
+REQUIRES ls /sys/devices/cpu/events/cache-misses
+PROG hardware:cache-misses:10 { print(probe); exit();}
+EXPECT hardware:cache-misses:10
 TIMEOUT 5
 
 NAME BEGIN

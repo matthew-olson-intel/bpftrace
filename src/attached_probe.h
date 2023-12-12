@@ -6,6 +6,7 @@
 #include <vector>
 
 #include "bpffeature.h"
+#include "bpfprogram.h"
 #include "btf.h"
 #include "types.h"
 
@@ -21,15 +22,16 @@ class AttachedProbe
 {
 public:
   AttachedProbe(Probe &probe,
-                std::tuple<uint8_t *, uintptr_t> func,
+                BpfProgram &&prog,
                 bool safe_mode,
                 BPFfeature &feature,
                 BTF &btf);
   AttachedProbe(Probe &probe,
-                std::tuple<uint8_t *, uintptr_t> func,
+                BpfProgram &&prog,
                 int pid,
                 BPFfeature &feature,
-                BTF &btf);
+                BTF &btf,
+                bool safe_mode = true);
   ~AttachedProbe();
   AttachedProbe(const AttachedProbe &) = delete;
   AttachedProbe &operator=(const AttachedProbe &) = delete;
@@ -41,19 +43,19 @@ public:
 private:
   std::string eventprefix() const;
   std::string eventname() const;
-  static std::string sanitise(const std::string &str);
   void resolve_offset_kprobe(bool safe_mode);
   bool resolve_offset_uprobe(bool safe_mode);
   void load_prog(BPFfeature &feature);
   void attach_multi_kprobe(void);
+  void attach_multi_uprobe(int pid);
   void attach_kprobe(bool safe_mode);
-  void attach_uprobe(bool safe_mode);
+  void attach_uprobe(int pid, bool safe_mode);
 
   // Note: the following usdt attachment functions will only activate a
   // semaphore if one exists.
   //
   // Increment semaphore count manually with memory hogging API (least
-  // preferrable)
+  // preferable)
   int usdt_sem_up_manual(const std::string &fn_name, void *ctx);
   // Increment semaphore count manually with BCC addsem API
   int usdt_sem_up_manual_addsem(int pid, const std::string &fn_name, void *ctx);
@@ -81,12 +83,13 @@ private:
   void cache_progfd(void);
 
   Probe &probe_;
-  std::tuple<uint8_t *, uintptr_t> func_;
+  BpfProgram prog_;
   std::vector<int> perf_event_fds_;
   bool close_progfd_ = true;
   int progfd_ = -1;
   uint64_t offset_ = 0;
   int tracing_fd_ = -1;
+  int btf_fd_ = -1;
   std::function<void()> usdt_destructor_;
 
   BTF &btf_;

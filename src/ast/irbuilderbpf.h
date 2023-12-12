@@ -69,6 +69,9 @@ public:
   CallInst *CreateBpfPseudoCallId(Map &map);
   CallInst *CreateBpfPseudoCallValue(int mapid);
   CallInst *CreateBpfPseudoCallValue(Map &map);
+  CallInst *CreateMapLookup(Map &map,
+                            Value *key,
+                            const std::string &name = "lookup_elem");
   Value *CreateMapLookupElem(Value *ctx,
                              Map &map,
                              Value *key,
@@ -82,11 +85,17 @@ public:
                            Map &map,
                            Value *key,
                            Value *val,
-                           const location &loc);
+                           const location &loc,
+                           int64_t flags = 0);
   void CreateMapDeleteElem(Value *ctx,
                            Map &map,
                            Value *key,
                            const location &loc);
+  void CreateForEachMapElem(Value *ctx,
+                            Map &map,
+                            Value *callback,
+                            Value *callback_ctx,
+                            const location &loc);
   void CreateProbeRead(Value *ctx,
                        Value *dst,
                        llvm::Value *size,
@@ -159,7 +168,8 @@ public:
                                const bool inverse,
                                const location &loc,
                                MDNode *metadata);
-  CallInst *CreateGetNs(bool boot_time, const location &loc);
+  CallInst *CreateGetNs(TimestampMode ts, const location &loc);
+  CallInst *CreateJiffies64(const location &loc);
   CallInst *CreateGetPidTgid(const location &loc);
   CallInst *CreateGetCurrentCgroupId(const location &loc);
   CallInst *CreateGetUidGid(const location &loc);
@@ -168,7 +178,8 @@ public:
   CallInst *CreateGetCurrentTask(const location &loc);
   CallInst *CreateGetRandom(const location &loc);
   CallInst   *CreateGetStackId(Value *ctx, bool ustack, StackType stack_type, const location& loc);
-  CallInst   *CreateGetJoinMap(Value *ctx, const location& loc);
+  CallInst *CreateGetFuncIp(const location &loc);
+  CallInst *CreateGetJoinMap(BasicBlock *failure_callback, const location &loc);
   CallInst *CreateHelperCall(libbpf::bpf_func_id func_id,
                              FunctionType *helper_type,
                              ArrayRef<Value *> args,
@@ -184,6 +195,19 @@ public:
                     size_t size,
                     const location *loc = nullptr);
   void CreateAtomicIncCounter(int mapfd, uint32_t idx);
+  void CreateMapElemInit(Value *ctx,
+                         Map &map,
+                         Value *key,
+                         Value *val,
+                         const location &loc);
+  void CreateMapElemAdd(Value *ctx,
+                        Map &map,
+                        Value *key,
+                        Value *val,
+                        const location &loc);
+  void CreateDebugOutput(std::string fmt_str,
+                         const std::vector<Value *> &values,
+                         const location &loc);
   void CreateTracePrintk(Value *fmt,
                          Value *fmt_size,
                          const std::vector<Value *> &values,
@@ -198,6 +222,8 @@ public:
   Value *CreateRegisterRead(Value *ctx, int offset, const std::string &name);
   Value      *CreatKFuncArg(Value *ctx, SizedType& type, std::string& name);
   Value *CreateRawTracepointArg(Value *ctx, const std::string &builtin);
+  Value *CreateUprobeArgsRecord(Value *ctx, const SizedType &args_type);
+  llvm::Type *UprobeArgsType(const SizedType &args_type);
   CallInst *CreateSkbOutput(Value *skb,
                             Value *len,
                             AllocaInst *data,
@@ -243,7 +269,19 @@ private:
                                 Builtin &builtin,
                                 AddrSpace as,
                                 const location &loc);
-  CallInst *createMapLookup(int mapid, Value *key);
+  CallInst *createMapLookup(int mapid,
+                            Value *key,
+                            const std::string &name = "lookup_elem");
+  CallInst *createMapLookup(int mapid,
+                            Value *key,
+                            PointerType *val_ptr_ty,
+                            const std::string &name = "lookup_elem");
+  CallInst *createGetScratchMap(int mapid,
+                                const std::string &name,
+                                PointerType *val_ptr_ty,
+                                const location &loc,
+                                BasicBlock *failure_callback,
+                                int key = 0);
   libbpf::bpf_func_id selectProbeReadHelper(AddrSpace as, bool str);
 
   llvm::Type *getKernelPointerStorageTy();

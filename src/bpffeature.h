@@ -54,9 +54,28 @@ public:                                                                        \
 #define DEFINE_PROG_TEST(var, progtype)                                        \
   __DEFINE_PROG_TEST(var, progtype, NULL, std::nullopt)
 
+class BPFfeature;
+
+class BPFnofeature
+{
+public:
+  BPFnofeature() : kprobe_multi_(false), uprobe_multi_(false)
+  {
+  }
+  int parse(const char* optarg);
+
+protected:
+  bool kprobe_multi_;
+  bool uprobe_multi_;
+  friend class BPFfeature;
+};
+
 class BPFfeature
 {
 public:
+  BPFfeature(BPFnofeature& no_feature) : no_feature_(no_feature)
+  {
+  }
   BPFfeature() = default;
   virtual ~BPFfeature() = default;
 
@@ -77,6 +96,7 @@ public:
   bool has_d_path();
   bool has_uprobe_refcnt();
   bool has_kprobe_multi();
+  bool has_uprobe_multi();
   bool has_kfunc();
   bool has_skb_output();
   bool has_raw_tp_special();
@@ -103,6 +123,9 @@ public:
   DEFINE_HELPER_TEST(probe_read_user_str, libbpf::BPF_PROG_TYPE_KPROBE);
   DEFINE_HELPER_TEST(probe_read_kernel_str, libbpf::BPF_PROG_TYPE_KPROBE);
   DEFINE_HELPER_TEST(ktime_get_boot_ns, libbpf::BPF_PROG_TYPE_KPROBE);
+  DEFINE_HELPER_TEST(ktime_get_tai_ns, libbpf::BPF_PROG_TYPE_KPROBE);
+  DEFINE_HELPER_TEST(get_func_ip, libbpf::BPF_PROG_TYPE_TRACING);
+  DEFINE_HELPER_TEST(jiffies64, libbpf::BPF_PROG_TYPE_KPROBE);
   DEFINE_PROG_TEST(kprobe, libbpf::BPF_PROG_TYPE_KPROBE);
   DEFINE_PROG_TEST(tracepoint, libbpf::BPF_PROG_TYPE_TRACEPOINT);
   DEFINE_PROG_TEST(perf_event, libbpf::BPF_PROG_TYPE_PERF_EVENT);
@@ -114,6 +137,7 @@ protected:
   std::optional<bool> has_map_batch_;
   std::optional<bool> has_uprobe_refcnt_;
   std::optional<bool> has_kprobe_multi_;
+  std::optional<bool> has_uprobe_multi_;
   std::optional<bool> has_skb_output_;
   std::optional<bool> has_raw_tp_special_;
   std::optional<bool> has_prog_kfunc_;
@@ -137,6 +161,8 @@ private:
       int* outfd = nullptr);
 
   BTF btf_ = BTF({ "vmlinux" });
+
+  BPFnofeature no_feature_;
 };
 
 #undef DEFINE_PROG_TEST

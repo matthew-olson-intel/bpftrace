@@ -46,6 +46,8 @@ const std::vector<ProbeListItem> HW_PROBE_LIST = {
 };
 // clang-format on
 
+const std::unordered_set<std::string> TIME_UNITS = { "s", "ms", "us", "hz" };
+
 class BPFtrace;
 
 typedef std::map<std::string, std::vector<std::string>> FuncParamLists;
@@ -82,14 +84,17 @@ public:
   const BPFtrace *bpftrace_;
 
 private:
-  std::set<std::string> get_matches_in_stream(const std::string &search_input,
-                                              bool ignore_trailing_module,
-                                              std::istream &symbol_stream,
-                                              const char delim = '\n');
+  std::set<std::string> get_matches_in_stream(
+      const std::string &search_input,
+      std::istream &symbol_stream,
+      bool ignore_trailing_module = false,
+      bool demangle_symbols = true,
+      const char delim = '\n');
   std::set<std::string> get_matches_for_probetype(
       const ProbeType &probe_type,
       const std::string &target,
-      const std::string &search_input);
+      const std::string &search_input,
+      bool demangle_symbols);
   std::set<std::string> get_matches_in_set(const std::string &search_input,
                                            const std::set<std::string> &set);
 
@@ -100,6 +105,7 @@ private:
   virtual std::unique_ptr<std::istream> get_symbols_from_file_safe(
       const std::string &path) const;
   virtual std::unique_ptr<std::istream> get_func_symbols_from_file(
+      int pid,
       const std::string &path) const;
   virtual std::unique_ptr<std::istream> get_symbols_from_usdt(
       int pid,

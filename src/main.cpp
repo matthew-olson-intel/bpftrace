@@ -75,6 +75,7 @@ enum Options
   INCLUDE,
   EMIT_ELF,
   EMIT_LLVM,
+  NO_FEATURE,
 };
 } // namespace
 
@@ -109,26 +110,30 @@ void usage()
   std::cerr << std::endl;
   std::cerr << "TROUBLESHOOTING OPTIONS:" << std::endl;
   std::cerr << "    -v                      verbose messages" << std::endl;
+  std::cerr << "    -vv                     more verbose messages (max 2)" << std::endl;
   std::cerr << "    -d                      (dry run) debug info" << std::endl;
   std::cerr << "    -dd                     (dry run) verbose debug info" << std::endl;
   std::cerr << "    --emit-elf FILE         (dry run) generate ELF file with bpf programs and write to FILE" << std::endl;
   std::cerr << "    --emit-llvm FILE        write LLVM IR to FILE.original.ll and FILE.optimized.ll" << std::endl;
   std::cerr << std::endl;
   std::cerr << "ENVIRONMENT:" << std::endl;
-  std::cerr << "    BPFTRACE_STRLEN             [default: 64] bytes on BPF stack per str()" << std::endl;
-  std::cerr << "    BPFTRACE_NO_CPP_DEMANGLE    [default: 0] disable C++ symbol demangling" << std::endl;
-  std::cerr << "    BPFTRACE_MAP_KEYS_MAX       [default: 4096] max keys in a map" << std::endl;
-  std::cerr << "    BPFTRACE_CAT_BYTES_MAX      [default: 10k] maximum bytes read by cat builtin" << std::endl;
-  std::cerr << "    BPFTRACE_MAX_PROBES         [default: 512] max number of probes" << std::endl;
-  std::cerr << "    BPFTRACE_MAX_BPF_PROGS      [default: 512] max number of generated BPF programs" << std::endl;
-  std::cerr << "    BPFTRACE_LOG_SIZE           [default: 1000000] log size in bytes" << std::endl;
-  std::cerr << "    BPFTRACE_PERF_RB_PAGES      [default: 64] pages per CPU to allocate for ring buffer" << std::endl;
-  std::cerr << "    BPFTRACE_NO_USER_SYMBOLS    [default: 0] disable user symbol resolution" << std::endl;
-  std::cerr << "    BPFTRACE_CACHE_USER_SYMBOLS [default: auto] enable user symbol cache" << std::endl;
-  std::cerr << "    BPFTRACE_VMLINUX            [default: none] vmlinux path used for kernel symbol resolution" << std::endl;
-  std::cerr << "    BPFTRACE_BTF                [default: none] BTF file" << std::endl;
-  std::cerr << "    BPFTRACE_STR_TRUNC_TRAILER  [default: '..'] string truncation trailer" << std::endl;
-  std::cerr << "    BPFTRACE_STACK_MODE         [default: bpftrace] Output format for ustack and kstack builtins" << std::endl;
+  std::cerr << "    BPFTRACE_BTF                      [default: none] BTF file" << std::endl;
+  std::cerr << "    BPFTRACE_CACHE_USER_SYMBOLS       [default: auto] enable user symbol cache" << std::endl;
+  std::cerr << "    BPFTRACE_CAT_BYTES_MAX            [default: 10k] maximum bytes read by cat builtin" << std::endl;
+  std::cerr << "    BPFTRACE_DEBUG_OUTPUT             [default: 0] enable bpftrace's internal debugging outputs" << std::endl;
+  std::cerr << "    BPFTRACE_KERNEL_BUILD             [default: /lib/modules/$(uname -r)] kernel build directory" << std::endl;
+  std::cerr << "    BPFTRACE_KERNEL_SOURCE            [default: /lib/modules/$(uname -r)] kernel headers directory" << std::endl;
+  std::cerr << "    BPFTRACE_LOG_SIZE                 [default: 1000000] log size in bytes" << std::endl;
+  std::cerr << "    BPFTRACE_MAX_BPF_PROGS            [default: 512] max number of generated BPF programs" << std::endl;
+  std::cerr << "    BPFTRACE_MAP_KEYS_MAX             [default: 4096] max keys in a map" << std::endl;
+  std::cerr << "    BPFTRACE_MAX_PROBES               [default: 512] max number of probes" << std::endl;
+  std::cerr << "    BPFTRACE_MAX_TYPE_RES_ITERATIONS  [default: 0] number of levels of nested field accesses for tracepoint args" << std::endl;
+  std::cerr << "    BPFTRACE_NO_CPP_DEMANGLE          [default: 0] disable C++ symbol demangling" << std::endl;
+  std::cerr << "    BPFTRACE_PERF_RB_PAGES            [default: 64] pages per CPU to allocate for ring buffer" << std::endl;
+  std::cerr << "    BPFTRACE_STACK_MODE               [default: bpftrace] Output format for ustack and kstack builtins" << std::endl;
+  std::cerr << "    BPFTRACE_STRLEN                   [default: 64] bytes on BPF stack per str()" << std::endl;
+  std::cerr << "    BPFTRACE_STR_TRUNC_TRAILER        [default: '..'] string truncation trailer" << std::endl;
+  std::cerr << "    BPFTRACE_VMLINUX                  [default: none] vmlinux path used for kernel symbol resolution" << std::endl;
   std::cerr << std::endl;
   std::cerr << "EXAMPLES:" << std::endl;
   std::cerr << "bpftrace -l '*sleep*'" << std::endl;
@@ -164,7 +169,7 @@ bool is_root()
     return true;
 }
 
-static void info()
+static void info(BPFnofeature no_feature)
 {
   struct utsname utsname;
   uname(&utsname);
@@ -178,10 +183,10 @@ static void info()
   std::cerr << BuildInfo::report();
 
   std::cerr << std::endl;
-  std::cerr << BPFfeature().report();
+  std::cerr << BPFfeature(no_feature).report();
 }
 
-static std::optional<struct timespec> get_boottime()
+static std::optional<struct timespec> get_delta_with_boottime(int clock_type)
 {
   std::optional<struct timespec> ret = std::nullopt;
   long lowest_delta = std::numeric_limits<long>::max();
@@ -194,13 +199,13 @@ static std::optional<struct timespec> get_boottime()
     struct timespec before, after, boottime;
     long delta;
 
-    if (::clock_gettime(CLOCK_REALTIME, &before))
+    if (::clock_gettime(clock_type, &before))
       continue;
 
     if (::clock_gettime(CLOCK_BOOTTIME, &boottime))
       continue;
 
-    if (::clock_gettime(CLOCK_REALTIME, &after))
+    if (::clock_gettime(clock_type, &after))
       continue;
 
     // There's no way 3 VDSO calls should take more than 1s. We'll
@@ -219,21 +224,21 @@ static std::optional<struct timespec> get_boottime()
     // Lowest delta seen so far, compute boot realtime and store it
     if (delta < lowest_delta)
     {
-      struct timespec boottime_realtime;
+      struct timespec delta_with_boottime;
       long nsec_avg = (before.tv_nsec + after.tv_nsec) / 2;
       if (nsec_avg - boottime.tv_nsec < 0)
       {
-        boottime_realtime.tv_sec = after.tv_sec - boottime.tv_sec - 1;
-        boottime_realtime.tv_nsec = nsec_avg - boottime.tv_nsec + 1e9;
+        delta_with_boottime.tv_sec = after.tv_sec - boottime.tv_sec - 1;
+        delta_with_boottime.tv_nsec = nsec_avg - boottime.tv_nsec + 1e9;
       }
       else
       {
-        boottime_realtime.tv_sec = after.tv_sec - boottime.tv_sec;
-        boottime_realtime.tv_nsec = nsec_avg - boottime.tv_nsec;
+        delta_with_boottime.tv_sec = after.tv_sec - boottime.tv_sec;
+        delta_with_boottime.tv_nsec = nsec_avg - boottime.tv_nsec;
       }
 
       lowest_delta = delta;
-      ret = boottime_realtime;
+      ret = delta_with_boottime;
     }
   }
 
@@ -243,6 +248,16 @@ static std::optional<struct timespec> get_boottime()
                     "builtin may be inaccurate";
 
   return ret;
+}
+
+static std::optional<struct timespec> get_boottime()
+{
+  return get_delta_with_boottime(CLOCK_REALTIME);
+}
+
+static std::optional<struct timespec> get_delta_taitime()
+{
+  return get_delta_with_boottime(CLOCK_TAI);
 }
 
 [[nodiscard]] static bool parse_env(BPFtrace& bpftrace, bool& verify_llvm_ir)
@@ -275,6 +290,9 @@ static std::optional<struct timespec> get_boottime()
   if (!get_bool_env_var("BPFTRACE_NO_CPP_DEMANGLE",
                         bpftrace.demangle_cpp_symbols_,
                         true))
+    return false;
+
+  if (!get_bool_env_var("BPFTRACE_DEBUG_OUTPUT", bpftrace.debug_output_, false))
     return false;
 
   if (!get_uint64_env_var("BPFTRACE_MAP_KEYS_MAX", bpftrace.mapmax_))
@@ -408,7 +426,7 @@ static std::optional<struct timespec> get_boottime()
     struct utsname utsname;
     uname(&utsname);
     std::string ksrc, kobj;
-    auto kdirs = get_kernel_dirs(utsname, !bpftrace.feature_->has_btf());
+    auto kdirs = get_kernel_dirs(utsname);
     ksrc = std::get<0>(kdirs);
     kobj = std::get<1>(kdirs);
 
@@ -484,6 +502,7 @@ struct Args
   std::string output_elf;
   std::string output_llvm;
   std::string aot;
+  BPFnofeature no_feature;
   OutputBufferConfig obc = OutputBufferConfig::UNSET;
   BuildMode build_mode = BuildMode::DYNAMIC;
   std::vector<std::string> include_dirs;
@@ -510,6 +529,7 @@ Args parse_args(int argc, char* argv[])
     option{ "no-warnings", no_argument, nullptr, Options::NO_WARNING },
     option{ "test", required_argument, nullptr, Options::TEST },
     option{ "aot", required_argument, nullptr, Options::AOT },
+    option{ "no-feature", required_argument, nullptr, Options::NO_FEATURE },
     option{ nullptr, 0, nullptr, 0 }, // Must be last
   };
 
@@ -522,7 +542,7 @@ Args parse_args(int argc, char* argv[])
       case Options::INFO: // --info
         if (is_root())
         {
-          info();
+          info(args.no_feature);
           exit(0);
         }
         exit(1);
@@ -548,6 +568,14 @@ Args parse_args(int argc, char* argv[])
       case Options::AOT: // --aot
         args.aot = optarg;
         args.build_mode = BuildMode::AHEAD_OF_TIME;
+        break;
+      case Options::NO_FEATURE: // --no-feature
+        if (args.no_feature.parse(optarg))
+        {
+          LOG(ERROR) << "USAGE: --no-feature can only have values "
+                        "'kprobe_multi,uprobe_multi'.";
+          exit(1);
+        }
         break;
       case 'o':
         args.output_file = optarg;
@@ -782,7 +810,7 @@ int main(int argc, char* argv[])
 
   libbpf_set_print(libbpf_print);
 
-  BPFtrace bpftrace(std::move(output));
+  BPFtrace bpftrace(std::move(output), args.no_feature);
   bool verify_llvm_ir = false;
 
   if (!args.cmd_str.empty())
@@ -795,6 +823,7 @@ int main(int argc, char* argv[])
   bpftrace.safe_mode_ = args.safe_mode;
   bpftrace.helper_check_level_ = args.helper_check_level;
   bpftrace.boottime_ = get_boottime();
+  bpftrace.delta_taitime_ = get_delta_taitime();
 
   if (!args.pid_str.empty())
   {
@@ -1004,7 +1033,7 @@ int main(int argc, char* argv[])
       llvm.emit_elf(args.output_elf);
       return 0;
     }
-    bytecode = std::move(llvm.emit());
+    bytecode = llvm.emit();
   }
   catch (const std::system_error& ex)
   {

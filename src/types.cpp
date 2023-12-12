@@ -186,6 +186,7 @@ std::string typestr(Type t)
     case Type::mac_address: return "mac_address"; break;
     case Type::cgroup_path: return "cgroup_path"; break;
     case Type::strerror: return "strerror"; break;
+    case Type::timestamp_mode: return "timestamp mode"; break;
       // clang-format on
   }
 
@@ -196,11 +197,12 @@ ProbeType probetype(const std::string &probeName)
 {
   ProbeType retType = ProbeType::invalid;
 
-  auto v = std::find_if(PROBE_LIST.begin(), PROBE_LIST.end(),
-                          [&probeName] (const ProbeItem& p) {
-                            return (p.name == probeName ||
-                                   p.abbr == probeName);
-                         });
+  auto v = std::find_if(PROBE_LIST.begin(),
+                        PROBE_LIST.end(),
+                        [&probeName](const ProbeItem &p) {
+                          return (p.name == probeName ||
+                                  p.aliases.find(probeName) != p.aliases.end());
+                        });
 
   if (v != PROBE_LIST.end())
     retType =  v->type;
@@ -215,7 +217,8 @@ std::string expand_probe_name(const std::string &orig_name)
   auto v = std::find_if(PROBE_LIST.begin(),
                         PROBE_LIST.end(),
                         [&orig_name](const ProbeItem &p) {
-                          return (p.name == orig_name || p.abbr == orig_name);
+                          return (p.name == orig_name ||
+                                  p.aliases.find(orig_name) != p.aliases.end());
                         });
 
   if (v != PROBE_LIST.end())
@@ -253,12 +256,6 @@ std::string probetypeName(ProbeType t)
   return {}; // unreached
 }
 
-bool is_userspace_probe(const ProbeType &probe_type)
-{
-  return probe_type == ProbeType::uprobe ||
-         probe_type == ProbeType::uretprobe || probe_type == ProbeType::usdt;
-}
-
 uint64_t asyncactionint(AsyncAction a)
 {
   return (uint64_t)a;
@@ -273,7 +270,7 @@ SizedType CreateInteger(size_t bits, bool is_signed)
   // passes infer the exact size.
   assert(bits == 0 || bits == 1 || bits == 8 || bits == 16 || bits == 32 ||
          bits == 64);
-  auto t = SizedType(Type::integer, bits / 8, is_signed);
+  auto t = SizedType(Type::integer, 0, is_signed);
   t.size_bits_ = bits;
   return t;
 }
@@ -352,7 +349,6 @@ SizedType CreateArray(size_t num_elements, const SizedType &element_type)
 {
   size_t size = num_elements * element_type.GetSize();
   auto ty = SizedType(Type::array, size);
-  ty.num_elements_ = num_elements;
   ty.element_type_ = std::make_shared<SizedType>(element_type);
   return ty;
 }
@@ -480,6 +476,11 @@ SizedType CreateCgroupPath()
 SizedType CreateStrerror()
 {
   return SizedType(Type::strerror, 8);
+}
+
+SizedType CreateTimestampMode()
+{
+  return SizedType(Type::timestamp_mode, 0);
 }
 
 bool SizedType::IsSigned(void) const
@@ -630,6 +631,7 @@ size_t hash<bpftrace::SizedType>::operator()(
     case bpftrace::Type::mac_address:
     case bpftrace::Type::cgroup_path:
     case bpftrace::Type::strerror:
+    case bpftrace::Type::timestamp_mode:
       break;
   }
 

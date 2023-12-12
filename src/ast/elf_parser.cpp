@@ -23,7 +23,7 @@ BpfBytecode parseBpfBytecodeFromElfObject(void *const elf)
   // were ever to diverge.
   assert(sizeof(Elf64_Shdr) == ehdr->e_shentsize);
 
-  Elf64_Shdr *shdrs = (Elf64_Shdr *)(fileptr + ehdr->e_shoff);
+  Elf64_Shdr *shdrs = reinterpret_cast<Elf64_Shdr *>(fileptr + ehdr->e_shoff);
   Elf64_Shdr *strtable_shdr = &shdrs[ehdr->e_shstrndx];
   assert(strtable_shdr->sh_type == SHT_STRTAB);
   char *strtable = fileptr + strtable_shdr->sh_offset;
@@ -38,7 +38,7 @@ BpfBytecode parseBpfBytecodeFromElfObject(void *const elf)
     std::vector<uint8_t> data;
     data.resize(shdr->sh_size);
 
-    if (shdr->sh_type != SHT_NOBITS)
+    if (shdr->sh_size && shdr->sh_type != SHT_NOBITS)
     {
       // NOBITS sections occupy no size on disk but take up size in
       // memory. Copy the file data for all other sections.

@@ -20,6 +20,7 @@
 #include <system_error>
 #include <tuple>
 #include <unistd.h>
+#include <unordered_set>
 
 #include "bpftrace.h"
 #include "debugfs.h"
@@ -273,16 +274,118 @@ std::string get_pid_exe(const std::string &pid)
   proc_path /= pid;
   proc_path /= "exe";
 
-  if (!std_filesystem::exists(proc_path, ec) ||
-      !std_filesystem::is_symlink(proc_path, ec))
-    return "";
-
-  return std_filesystem::read_symlink(proc_path).string();
+  try
+  {
+    return std_filesystem::read_symlink(proc_path).string();
+  }
+  catch (const std_filesystem::filesystem_error &e)
+  {
+    auto err = e.code().value();
+    if (err == ENOENT || err == EINVAL)
+      return {};
+    else
+      throw e;
+  }
 }
 
 std::string get_pid_exe(pid_t pid)
 {
   return get_pid_exe(std::to_string(pid));
+}
+
+std::string get_proc_maps(const std::string &pid)
+{
+  std::error_code ec;
+  std_filesystem::path proc_path{ "/proc" };
+  proc_path /= pid;
+  proc_path /= "maps";
+
+  if (!std_filesystem::exists(proc_path, ec))
+    return "";
+
+  return proc_path.string();
+}
+
+std::string get_proc_maps(pid_t pid)
+{
+  return get_proc_maps(std::to_string(pid));
+}
+
+std::vector<std::string> get_mapped_paths_for_pid(pid_t pid)
+{
+  static std::map<pid_t, std::vector<std::string>> paths_cache;
+
+  auto it = paths_cache.find(pid);
+  if (it != paths_cache.end())
+  {
+    return it->second;
+  }
+
+  std::vector<std::string> paths;
+
+  // start with the exe
+  std::string pid_exe = get_pid_exe(pid);
+  if (!pid_exe.empty() && pid_exe.find("(deleted)") == std::string::npos)
+    paths.push_back(get_pid_exe(pid));
+
+  // get all the mapped libraries
+  std::string maps_path = get_proc_maps(pid);
+  if (maps_path.empty())
+  {
+    LOG(WARNING) << "Maps path is empty";
+    return paths;
+  }
+
+  std::fstream fs(maps_path, std::ios_base::in);
+  if (!fs.is_open())
+  {
+    LOG(WARNING) << "Unable to open procfs mapfile: " << maps_path;
+    return paths;
+  }
+
+  std::unordered_set<std::string> seen_mappings;
+
+  std::string line;
+  // Example mapping:
+  // 7fc8ee4fa000-7fc8ee4fb000 r--p 00000000 00:1f 27168296 /usr/libc.so.6
+  while (std::getline(fs, line))
+  {
+    char buf[PATH_MAX + 1];
+    buf[0] = '\0';
+    auto res = std::sscanf(line.c_str(), "%*s %*s %*x %*s %*u %[^\n]", buf);
+    // skip [heap], [vdso], and non file paths etc...
+    if (res == 1 && buf[0] == '/')
+    {
+      std::string name = buf;
+      if (name.find("(deleted)") == std::string::npos &&
+          seen_mappings.count(name) == 0)
+      {
+        seen_mappings.emplace(name);
+        paths.push_back(std::move(name));
+      }
+    }
+  }
+
+  paths_cache.emplace(pid, paths);
+  return paths;
+}
+
+std::vector<std::string> get_mapped_paths_for_running_pids()
+{
+  std::unordered_set<std::string> unique_paths;
+  for (auto pid : get_all_running_pids())
+  {
+    for (auto &path : get_mapped_paths_for_pid(pid))
+    {
+      unique_paths.insert(std::move(path));
+    }
+  }
+  std::vector<std::string> paths;
+  for (auto &path : unique_paths)
+  {
+    paths.emplace_back(std::move(path));
+  }
+  return paths;
 }
 
 bool has_wildcard(const std::string &str)
@@ -563,12 +666,11 @@ std::vector<std::pair<std::string, std::string>> get_cgroup_paths(
   // Sort paths lexically by name (with the exception of unified, which always
   // comes first)
   std::sort(result.begin(), result.end(), [](auto &pair1, auto &pair2) {
+    if (pair2.first == "unified")
+      return false;
     if (pair1.first == "unified")
       return true;
-    else if (pair2.first == "unified")
-      return false;
-    else
-      return pair1.first < pair2.first;
+    return pair1.first < pair2.first;
   });
 
   return result;
@@ -612,7 +714,11 @@ namespace {
   std::string unpack_kheaders_tar_xz(const struct utsname& utsname)
   {
     std::error_code ec;
+#if defined(__ANDROID__)
+    std_filesystem::path path_prefix{ "/data/local/tmp" };
+#else
     std_filesystem::path path_prefix{ "/tmp" };
+#endif
     std_filesystem::path path_kheaders{ "/sys/kernel/kheaders.tar.xz" };
     if (const char* tmpdir = ::getenv("TMPDIR")) {
       path_prefix = tmpdir;
@@ -768,7 +874,14 @@ bool is_compile_time_func(const std::string &func_name)
                      [&](const auto &cand) { return func_name == cand; });
 }
 
-std::string exec_system(const char* cmd)
+bool is_supported_lang(const std::string &lang)
+{
+  return std::any_of(UPROBE_LANGS.begin(),
+                     UPROBE_LANGS.end(),
+                     [&](const auto &cand) { return lang == cand; });
+}
+
+std::string exec_system(const char *cmd)
 {
   std::array<char, 128> buffer;
   std::string result;
@@ -1047,7 +1160,7 @@ std::string hex_format_buffer(const char *buf,
   return std::string(s);
 }
 
-FuncsModulesMap get_traceable_funcs()
+FuncsModulesMap parse_traceable_funcs()
 {
 #ifdef FUZZ
   return {};
@@ -1235,7 +1348,7 @@ std::optional<std::string> abs_path(const std::string &rel_path)
 
 int64_t min_value(const std::vector<uint8_t> &value, int nvalues)
 {
-  int64_t val, max = 0, retval;
+  int64_t val, max = 0;
   for (int i = 0; i < nvalues; i++)
   {
     val = read_data<int64_t>(value.data() + i * sizeof(int64_t));
@@ -1243,20 +1356,7 @@ int64_t min_value(const std::vector<uint8_t> &value, int nvalues)
       max = val;
   }
 
-  /*
-   * This is a hack really until the code generation for the min() function
-   * is sorted out. The way it is currently implemented doesn't allow >
-   * 32 bit quantities and also means we have to do gymnastics with the return
-   * value owing to the way it is stored (i.e., 0xffffffff - val).
-   */
-  if (max == 0) /* If we have applied the zero() function */
-    retval = max;
-  else if ((0xffffffff - max) <= 0) /* A negative 32 bit value */
-    retval = 0 - (max - 0xffffffff);
-  else
-    retval = 0xffffffff - max; /* A positive 32 bit value */
-
-  return retval;
+  return max;
 }
 
 uint64_t max_value(const std::vector<uint8_t> &value, int nvalues)
@@ -1280,25 +1380,6 @@ std::string strip_symbol_module(const std::string &symbol)
 {
   size_t idx = symbol.rfind(" [");
   return idx != std::string::npos ? symbol.substr(0, idx) : symbol;
-}
-
-int get_kernel_ptr_width()
-{
-  // We can't assume that sizeof(void*) in bpftrace is the same as the kernel
-  // pointer size (bpftrace can be compiled as a 32-bit binary and run on a
-  // 64-bit kernel), so we guess based on the machine field of struct utsname.
-  // Note that the uname() syscall can return different values for compat mode
-  // processes (e.g. "armv8l" instead of "aarch64"; see COMPAT_UTS_MACHINE), so
-  // make sure this is taken into account.
-  struct utsname utsname;
-  if (uname(&utsname) != 0)
-    LOG(FATAL) << "uname failed: " << strerror(errno);
-
-  const char *machine = utsname.machine;
-  if (!strncmp(machine, "armv7", 5))
-    return 32;
-
-  return 64;
 }
 
 std::pair<std::string, std::string> split_symbol_module(
@@ -1383,6 +1464,45 @@ std::vector<int> get_pids_for_program(const std::string &program)
       pids.emplace_back(std::stoi(filename));
   }
   return pids;
+}
+
+std::vector<int> get_all_running_pids()
+{
+  std::vector<int> pids;
+  for (const auto &process : std_filesystem::directory_iterator("/proc"))
+  {
+    std::string filename = process.path().filename().string();
+    if (!std::all_of(filename.begin(), filename.end(), ::isdigit))
+      continue;
+    pids.emplace_back(std::stoi(filename));
+  }
+  return pids;
+}
+
+// BPF verifier rejects programs with names containing certain characters, use
+// this function to replace every character not valid for C identifiers by '_'
+std::string sanitise_bpf_program_name(const std::string &name)
+{
+  std::string sanitised_name = name;
+  std::replace_if(
+      sanitised_name.begin(),
+      sanitised_name.end(),
+      [](char c) { return !isalnum(c) && c != '_'; },
+      '_');
+
+  // Kernel KSYM_NAME_LEN is 128 until 6.1
+  // If we'll exceed the limit, hash the string and cap at 127 (+ null byte).
+  if (sanitised_name.size() > 127)
+  {
+    size_t hash = std::hash<std::string>{}(sanitised_name);
+
+    // std::hash returns size_t, so we reserve 2*sizeof(size_t)+1 characters
+    std::ostringstream os;
+    os << sanitised_name.substr(0, 127 - (2 * sizeof(hash)) - 1) << '_'
+       << std::setfill('0') << std::hex << hash;
+    sanitised_name = os.str();
+  }
+  return sanitised_name;
 }
 
 } // namespace bpftrace

@@ -57,7 +57,8 @@ void test(BPFtrace &bpftrace,
           bool mock_has_features,
           Driver &driver,
           const std::string &input,
-          int expected_result = 0,
+          int expected_result,
+          std::string_view expected_error = {},
           bool safe_mode = true,
           bool has_child = false)
 {
@@ -79,46 +80,86 @@ void test(BPFtrace &bpftrace,
   // Override to mockbpffeature.
   bpftrace.feature_ = std::make_unique<MockBPFfeature>(mock_has_features);
   ast::SemanticAnalyser semantics(driver.root.get(), bpftrace, out, has_child);
-  EXPECT_EQ(expected_result, semantics.analyse()) << msg.str() + out.str();
+  ASSERT_EQ(expected_result, semantics.analyse()) << msg.str() + out.str();
+  if (expected_error.data())
+  {
+    if (!expected_error.empty() && expected_error[0] == '\n')
+      expected_error.remove_prefix(1); // Remove initial '\n'
+    EXPECT_EQ(out.str(), expected_error);
+  }
 }
 
 void test(BPFtrace &bpftrace,
-    const std::string &input,
-    int expected_result=0,
-    bool safe_mode = true)
+          const std::string &input,
+          int expected_result,
+          bool safe_mode = true)
 {
   Driver driver(bpftrace);
-  test(bpftrace, true, driver, input, expected_result, safe_mode);
+  test(bpftrace, true, driver, input, expected_result, {}, safe_mode, false);
 }
 
-void test(Driver &driver,
-    const std::string &input,
-    int expected_result=0,
-    bool safe_mode = true)
+void test(Driver &driver, const std::string &input, int expected_result)
 {
   auto bpftrace = get_mock_bpftrace();
-  test(*bpftrace, true, driver, input, expected_result, safe_mode);
+  test(*bpftrace, true, driver, input, expected_result, {}, true, false);
 }
 
 void test(MockBPFfeature &feature,
           const std::string &input,
-          int expected_result = 0,
+          int expected_result,
           bool safe_mode = true)
 {
   auto bpftrace = get_mock_bpftrace();
   Driver driver(*bpftrace);
   bool mock_has_features = feature.has_features_;
-  test(*bpftrace, mock_has_features, driver, input, expected_result, safe_mode);
+  test(*bpftrace,
+       mock_has_features,
+       driver,
+       input,
+       expected_result,
+       {},
+       safe_mode,
+       false);
 }
 
 void test(const std::string &input,
-          int expected_result = 0,
-          bool safe_mode = true,
+          int expected_result,
+          bool safe_mode,
           bool has_child = false)
 {
   auto bpftrace = get_mock_bpftrace();
   Driver driver(*bpftrace);
-  test(*bpftrace, true, driver, input, expected_result, safe_mode, has_child);
+  test(*bpftrace,
+       true,
+       driver,
+       input,
+       expected_result,
+       {},
+       safe_mode,
+       has_child);
+}
+
+void test(const std::string &input, int expected_result)
+{
+  auto bpftrace = get_mock_bpftrace();
+  Driver driver(*bpftrace);
+  test(*bpftrace, true, driver, input, expected_result, {}, true, false);
+}
+
+void test(const std::string &input,
+          int expected_result,
+          std::string_view expected_error)
+{
+  auto bpftrace = get_mock_bpftrace();
+  Driver driver(*bpftrace);
+  test(*bpftrace,
+       true,
+       driver,
+       input,
+       expected_result,
+       expected_error,
+       true,
+       false);
 }
 
 TEST(semantic_analyser, builtin_variables)
@@ -148,9 +189,11 @@ TEST(semantic_analyser, builtin_variables)
   test("kprobe:f { probe }", 0);
   test("tracepoint:a:b { args }", 0);
   test("kprobe:f { fake }", 1);
+  test("kprobe:f { jiffies }", 0);
 
   MockBPFfeature feature(false);
   test(feature, "k:f { cgroup }", 1);
+  test(feature, "k:f { jiffies }", 1);
 }
 
 TEST(semantic_analyser, builtin_cpid)
@@ -180,6 +223,7 @@ TEST(semantic_analyser, builtin_functions)
   test("kprobe:f { @x = 1; print(@x) }", 0);
   test("kprobe:f { @x = 1; clear(@x) }", 0);
   test("kprobe:f { @x = 1; zero(@x) }", 0);
+  test("kprobe:f { @x = 1; @s = len(@x) }", 0);
   test("kprobe:f { time() }", 0);
   test("kprobe:f { exit() }", 0);
   test("kprobe:f { str(0xffff) }", 0);
@@ -204,6 +248,7 @@ TEST(semantic_analyser, builtin_functions)
   test("uprobe:/bin/bash:main { uaddr(\"glob_asciirange\") }", 0);
   test("kprobe:f { cgroupid(\"/sys/fs/cgroup/unified/mycg\"); }", 0);
   test("kprobe:f { macaddr(0xffff) }", 0);
+  test("kprobe:f { nsecs() }", 0);
 }
 
 TEST(semantic_analyser, undefined_map)
@@ -546,6 +591,15 @@ TEST(semantic_analyser, call_zero)
   test("kprobe:f { @x = count(); zero(@x) ? 0 : 1; }", 10);
 }
 
+TEST(semantic_analyser, call_len)
+{
+  test("kprobe:f { @x[0] = 0; len(@x); }", 0);
+  test("kprobe:f { @x[0] = 0; len(); }", 1);
+  test("kprobe:f { @x[0] = 0; len(@x, 1); }", 1);
+  test("kprobe:f { @x[0] = 0; len(@x[2]); }", 1);
+  test("kprobe:f { $x = 0; len($x); }", 1);
+}
+
 TEST(semantic_analyser, call_time)
 {
   test("kprobe:f { time(); }", 0);
@@ -577,6 +631,10 @@ TEST(semantic_analyser, call_strftime)
   test("kprobe:f { @[strftime(\"%M:%S\", nsecs)] = 1; }", 0);
   test("kprobe:f { printf(\"%s\", strftime(\"%M:%S\", nsecs)); }", 0);
   test("kprobe:f { strncmp(\"str\", strftime(\"%M:%S\", nsecs), 10); }", 10);
+
+  test("kprobe:f { strftime(\"%M:%S\", nsecs(monotonic)); }", 10);
+  test("kprobe:f { strftime(\"%M:%S\", nsecs(boot)); }", 0);
+  test("kprobe:f { strftime(\"%M:%S\", nsecs(tai)); }", 0);
 }
 
 TEST(semantic_analyser, call_str)
@@ -1432,8 +1490,10 @@ TEST(semantic_analyser, uprobe)
   test("uprobe:/bin/sh:f+0x10 { 1 }", 0);
   test("u:/bin/sh:f+0x10 { 1 }", 0);
   test("uprobe:sh:f { 1 }", 0);
+  test("uprobe:/bin/sh:cpp:f { 1 }", 0);
   test("uprobe:/notexistfile:f { 1 }", 1);
   test("uprobe:notexistfile:f { 1 }", 1);
+  test("uprobe:/bin/sh:nolang:f { 1 }", 1);
 
   test("uretprobe:/bin/sh:f { 1 }", 0);
   test("ur:/bin/sh:f { 1 }", 0);
@@ -1441,8 +1501,10 @@ TEST(semantic_analyser, uprobe)
   test("ur:sh:f { 1 }", 0);
   test("uretprobe:/bin/sh:0x10 { 1 }", 0);
   test("ur:/bin/sh:0x10 { 1 }", 0);
+  test("uretprobe:/bin/sh:cpp:f { 1 }", 0);
   test("uretprobe:/notexistfile:f { 1 }", 1);
   test("uretprobe:notexistfile:f { 1 }", 1);
+  test("uretprobe:/bin/sh:nolang:f { 1 }", 1);
 }
 
 TEST(semantic_analyser, usdt)
@@ -1902,7 +1964,9 @@ TEST(semantic_analyser, signed_int_modulo_warnings)
 TEST(semantic_analyser, map_as_lookup_table)
 {
   // Initializing a map should not lead to usage issues
-  test("BEGIN { @[0] = \"abc\"; @[1] = \"def\" } kretprobe:f { printf(\"%s\\n\", @[retval])}");
+  test("BEGIN { @[0] = \"abc\"; @[1] = \"def\" } kretprobe:f { "
+       "printf(\"%s\\n\", @[retval])}",
+       0);
 }
 
 TEST(semantic_analyser, cast_sign)
@@ -2009,6 +2073,59 @@ TEST(semantic_analyser, intptr_cast_usage)
   // This is OK (@ = 0x636261)
   test("kprobe:f { @=avg(*(int32*)\"abc\") }", 0);
   test("kprobe:f { @=avg(*(int32*)123) }", 0);
+}
+
+TEST(semantic_analyser, intarray_cast_types)
+{
+  test("kprobe:f { @ = (int8[8])1 }", 0);
+  test("kprobe:f { @ = (int16[4])1 }", 0);
+  test("kprobe:f { @ = (int32[2])1 }", 0);
+  test("kprobe:f { @ = (int64[1])1 }", 0);
+  test("kprobe:f { @ = (int8[4])(int32)1 }", 0);
+  test("kprobe:f { @ = (int8[2])(int16)1 }", 0);
+  test("kprobe:f { @ = (int8[1])(int8)1 }", 0);
+  test("kprobe:f { @ = (int8[])1 }", 0);
+  test("kprobe:f { @ = (uint8[8])1 }", 0);
+  test("kretprobe:f { @ = (int8[8])retval }", 0);
+
+  test("kprobe:f { @ = (int8[4])1 }", 1);
+  test("kprobe:f { @ = (bool[64])1 }", 1);
+  test("kprobe:f { @ = (int32[])(int16)1 }", 1);
+  test("kprobe:f { @ = (int8[6])\"hello\" }", 1);
+  test("struct Foo { int x; } kprobe:f { @ = (struct Foo [2])1 }", 1);
+}
+
+TEST(semantic_analyser, intarray_cast_usage)
+{
+  test("kprobe:f { $a=(int8[8])1; }", 0);
+  test("kprobe:f { @=(int8[8])1; }", 0);
+  test("kprobe:f { @[(int8[8])1] = 0; }", 0);
+  test("kprobe:f { if (((int8[8])1)[0] == 1) {} }", 0);
+}
+
+TEST(semantic_analyser, intarray_to_int_cast)
+{
+  test("#include <stdint.h>\n"
+       "struct Foo { uint8_t x[8]; } "
+       "kprobe:f { @ = (int64)((struct Foo *)arg0)->x; }",
+       0);
+  test("#include <stdint.h>\n"
+       "struct Foo { uint32_t x[2]; } "
+       "kprobe:f { @ = (int64)((struct Foo *)arg0)->x; }",
+       0);
+  test("#include <stdint.h>\n"
+       "struct Foo { uint8_t x[4]; } "
+       "kprobe:f { @ = (int32)((struct Foo *)arg0)->x; }",
+       0);
+
+  test("#include <stdint.h>\n"
+       "struct Foo { uint8_t x[8]; } "
+       "kprobe:f { @ = (int32)((struct Foo *)arg0)->x; }",
+       1);
+  test("#include <stdint.h>\n"
+       "struct Foo { uint8_t x[8]; } "
+       "kprobe:f { @ = (int32 *)((struct Foo *)arg0)->x; }",
+       1);
 }
 
 TEST(semantic_analyser, signal)
@@ -2702,6 +2819,21 @@ TEST(semantic_analyser, string_size)
   ASSERT_EQ(var_assign->var->type.GetField(0).type.GetSize(), 6UL);
 }
 
+TEST(semantic_analyser, call_nsecs)
+{
+  test("BEGIN { $ns = nsecs(); }", 0);
+  test("BEGIN { $ns = nsecs(monotonic); }", 0);
+  test("BEGIN { $ns = nsecs(boot); }", 0);
+  MockBPFfeature hasfeature(true);
+  test(hasfeature, "BEGIN { $ns = nsecs(tai); }", 0);
+  test("BEGIN { $ns = nsecs(sw_tai); }", 0);
+  test("BEGIN { $ns = nsecs(xxx); }", 1, R"(
+stdin:1:15-24: ERROR: Invalid timestamp mode: xxx
+BEGIN { nsecs(xxx); }
+        ~~~~~~~~~~
+)");
+}
+
 class semantic_analyser_btf : public test_btf
 {
 };
@@ -2714,9 +2846,12 @@ TEST_F(semantic_analyser_btf, kfunc)
   test("kretfunc:func_1 { $x = retval; }", 0);
   test("kfunc:vmlinux:func_1 { 1 }", 0);
   test("kfunc:*:func_1 { 1 }", 0);
+  test("kfunc:func_1 { @[func] = 1; }", 0);
 
   test("kretfunc:func_1 { $x = args.foo; }", 1);
-  test("kretfunc:func_1 { $x = args; }", 1);
+  test("kretfunc:func_1 { $x = args; }", 0);
+  test("kfunc:func_1 { @ = args; }", 0);
+  test("kfunc:func_1 { @[args] = 1; }", 0);
   // reg() is not available in kfunc
 #ifdef ARCH_X86_64
   test("kfunc:func_1 { reg(\"ip\") }", 1);
@@ -2770,6 +2905,31 @@ TEST_F(semantic_analyser_btf, iter)
   test("iter:task,iter:task_file { 1 }", 1);
   test("iter:task,iter:task_vma { 1 }", 1);
   test("iter:task,f:func_1 { 1 }", 1);
+}
+
+// Sanity check for fentry/fexit aliases
+TEST_F(semantic_analyser_btf, fentry)
+{
+  test("fentry:func_1 { 1 }", 0);
+  test("fexit:func_1 { 1 }", 0);
+  test("fentry:func_1 { $x = args.a; $y = args.foo1; $z = args.foo2->f.a; }",
+       0);
+  test("fexit:func_1 { $x = retval; }", 0);
+  test("fentry:vmlinux:func_1 { 1 }", 0);
+  test("fentry:*:func_1 { 1 }", 0);
+  test("fentry:func_1 { @[func] = 1; }", 0);
+
+  test("fexit:func_1 { $x = args.foo; }", 1);
+  test("fexit:func_1 { $x = args; }", 0);
+  test("fentry:func_1 { @ = args; }", 0);
+  test("fentry:func_1 { @[args] = 1; }", 0);
+  // reg() is not available in fentry
+#ifdef ARCH_X86_64
+  test("fentry:func_1 { reg(\"ip\") }", 1);
+  test("fexit:func_1 { reg(\"ip\") }", 1);
+#endif
+  // Backwards compatibility
+  test("fentry:func_1 { $x = args->a; }", 0);
 }
 
 } // namespace semantic_analyser
