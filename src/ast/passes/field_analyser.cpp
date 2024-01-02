@@ -65,8 +65,10 @@ void FieldAnalyser::visit(Builtin &builtin)
 void FieldAnalyser::visit(Map &map)
 {
   MapKey key;
-  if (map.vargs) {
-    for (Expression *expr : *map.vargs) {
+  if (map.vargs)
+  {
+    for (Expression *expr : *map.vargs)
+    {
       Visit(*expr);
     }
   }
@@ -171,6 +173,7 @@ bool FieldAnalyser::resolve_args(Probe &probe)
   {
     auto probe_type = probetype(ap->provider);
     if (probe_type != ProbeType::kfunc && probe_type != ProbeType::kretfunc &&
+        probe_type != ProbeType::kprobe && probe_type != ProbeType::kretprobe &&
         probe_type != ProbeType::uprobe)
       continue;
 
@@ -326,15 +329,18 @@ void FieldAnalyser::visit(Probe &probe)
 {
   probe_ = &probe;
 
-  for (AttachPoint *ap : *probe.attach_points) {
+  for (AttachPoint *ap : *probe.attach_points)
+  {
     probe_type_ = probetype(ap->provider);
     prog_type_ = progtype(probe_type_);
     attach_func_ = ap->func;
   }
-  if (probe.pred) {
+  if (probe.pred)
+  {
     Visit(*probe.pred);
   }
-  for (Statement *stmt : *probe.stmts) {
+  for (Statement *stmt : *probe.stmts)
+  {
     Visit(*stmt);
   }
 }

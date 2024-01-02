@@ -341,7 +341,9 @@ AttachPointParser::State AttachPointParser::kprobe_parser(bool allow_offset)
   }
 
   // Handle kprobe:func+0x100 case
-  auto plus_count = std::count(parts_[func_idx].cbegin(), parts_[func_idx].cend(), '+');
+  auto plus_count = std::count(parts_[func_idx].cbegin(),
+                               parts_[func_idx].cend(),
+                               '+');
   if (plus_count)
   {
     if (!allow_offset)
@@ -379,7 +381,8 @@ AttachPointParser::State AttachPointParser::kprobe_parser(bool allow_offset)
     ap_->func = parts_[func_idx];
   }
 
-  if (ap_->func.find('*') != std::string::npos)
+  if (ap_->func.find('*') != std::string::npos ||
+      ap_->target.find('*') != std::string::npos)
     ap_->need_expansion = true;
 
   return OK;
@@ -677,7 +680,6 @@ AttachPointParser::State AttachPointParser::hardware_parser()
 
   return OK;
 }
-
 
 AttachPointParser::State AttachPointParser::watchpoint_parser(bool async)
 {
